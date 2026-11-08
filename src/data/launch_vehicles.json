@@ -1,0 +1,29 @@
+{
+  "comment": "TODO: populate with launch vehicle definitions. Each entry needs: name, cost_usd, payload_capacity_kg (dict keyed by orbit class: LEO/GTO/escape/interplanetary), reliability (0-1), description, plus optional fields (fairing_size, launch_sites).",
+  "launch_vehicles": [
+    {
+      "id": "small_launcher",
+      "name": "Small Launcher",
+      "cost_usd": 8000000,
+      "payload_capacity_kg": {"LEO": 300, "SSO": 250},
+      "reliability": 0.90,
+      "description": "Budget option for CubeSat-scale missions. Limited to low Earth orbits."
+    },
+    {
+      "id": "medium_launcher",
+      "name": "Medium Launcher",
+      "cost_usd": 65000000,
+      "payload_capacity_kg": {"LEO": 18000, "SSO": 15000, "GTO": 6000, "escape": 4000},
+      "reliability": 0.97,
+      "description": "Workhorse for most science missions; can reach escape velocity."
+    },
+    {
+      "id": "heavy_launcher",
+      "name": "Heavy Launcher",
+      "cost_usd": 2000000000,
+      "payload_capacity_kg": {"LEO": 140000, "escape": 30000, "interplanetary": 25000},
+      "reliability": 0.98,
+      "description": "Flagship-class; required for large payloads and crewed missions."
+    }
+  ]
+}

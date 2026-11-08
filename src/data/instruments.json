@@ -1,0 +1,65 @@
+{
+  "comment": "TODO: populate with instrument definitions. Each entry needs: name, mass_kg, power_w, cost_usd, data_rate_mbps, science_value (0-100), description, plus optional fields (pointing accuracy, orbit constraints).",
+  "instruments": [
+    {
+      "id": "wide_angle_camera",
+      "name": "Wide-Angle Camera",
+      "mass_kg": 5,
+      "power_w": 15,
+      "cost_usd": 2000000,
+      "data_rate_mbps": 20,
+      "science_value": 30,
+      "description": "Cheap, light imager good for context imaging and weather monitoring."
+    },
+    {
+      "id": "high_res_imager",
+      "name": "High-Resolution Imager",
+      "mass_kg": 40,
+      "power_w": 60,
+      "cost_usd": 15000000,
+      "data_rate_mbps": 150,
+      "science_value": 75,
+      "description": "Detailed surface imaging; high data volume requires good comms."
+    },
+    {
+      "id": "spectrometer",
+      "name": "Spectrometer",
+      "mass_kg": 25,
+      "power_w": 45,
+      "cost_usd": 12000000,
+      "data_rate_mbps": 10,
+      "science_value": 70,
+      "description": "Analyzes composition of surfaces, atmospheres, and plumes."
+    },
+    {
+      "id": "radar_sounder",
+      "name": "Radar Sounder",
+      "mass_kg": 80,
+      "power_w": 200,
+      "cost_usd": 30000000,
+      "data_rate_mbps": 80,
+      "science_value": 85,
+      "description": "Probes subsurface structure (ice, geology). Heavy and power-hungry."
+    },
+    {
+      "id": "magnetometer",
+      "name": "Magnetometer",
+      "mass_kg": 3,
+      "power_w": 5,
+      "cost_usd": 1000000,
+      "data_rate_mbps": 1,
+      "science_value": 40,
+      "description": "Measures magnetic fields; essential for space weather missions."
+    },
+    {
+      "id": "sample_return",
+      "name": "Sample Return Capsule",
+      "mass_kg": 500,
+      "power_w": 100,
+      "cost_usd": 200000000,
+      "data_rate_mbps": 5,
+      "science_value": 100,
+      "description": "Returns physical samples to Earth. Enormous mass, cost, and ops complexity."
+    }
+  ]
+}

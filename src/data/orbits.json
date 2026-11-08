@@ -1,0 +1,59 @@
+{
+  "comment": "TODO: populate with orbit definitions. Each entry needs: name, body, altitude_km, inclination_deg, period_hours, description, plus computed/derived fields (coverage, eclipse_fraction, drag_factor, comms_passes_per_day, radiation_level).",
+  "orbits": [
+    {
+      "id": "leo",
+      "name": "Low Earth Orbit (LEO)",
+      "body": "Earth",
+      "altitude_km": 400,
+      "inclination_deg": 51.6,
+      "period_hours": 1.5,
+      "description": "Close to Earth: easy comms, but atmospheric drag limits lifetime."
+    },
+    {
+      "id": "sso",
+      "name": "Sun-Synchronous Orbit (SSO)",
+      "body": "Earth",
+      "altitude_km": 600,
+      "inclination_deg": 97.8,
+      "period_hours": 1.6,
+      "description": "Constant sunlight for power; consistent lighting for imaging."
+    },
+    {
+      "id": "geo",
+      "name": "Geostationary Orbit (GEO)",
+      "body": "Earth",
+      "altitude_km": 35786,
+      "inclination_deg": 0,
+      "period_hours": 24,
+      "description": "Fixed over one longitude; great for comms, poor Earth coverage."
+    },
+    {
+      "id": "l1",
+      "name": "Sun-Earth L1",
+      "body": "Deep Space",
+      "altitude_km": 1500000,
+      "inclination_deg": 0,
+      "period_hours": 720,
+      "description": "Uninterrupted solar view; requires station-keeping fuel."
+    },
+    {
+      "id": "lmo",
+      "name": "Low Lunar Orbit",
+      "body": "Moon",
+      "altitude_km": 100,
+      "inclination_deg": 90,
+      "period_hours": 2,
+      "description": "Close lunar mapping; limited comms windows from Earth."
+    },
+    {
+      "id": "lmo_mars",
+      "name": "Low Mars Orbit",
+      "body": "Mars",
+      "altitude_km": 400,
+      "inclination_deg": 93,
+      "period_hours": 2,
+      "description": "Mars surface observation; long cruise phase required."
+    }
+  ]
+}

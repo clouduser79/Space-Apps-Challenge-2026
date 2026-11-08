@@ -1,0 +1,61 @@
+{
+  "comment": "TODO: populate with mission scenarios. Each entry needs: name, description, objective, budget_usd, mission_months, difficulty (cadet/engineer/expert), required_objectives, allowed_orbits, allowed_instruments, event_frequency_multiplier, sandbox_mode.",
+  "scenarios": [
+    {
+      "id": "earth_observation",
+      "name": "Earth Observation",
+      "description": "Image a target region every week for two years.",
+      "objective": "Acquire weekly images of a ground region for 24 months.",
+      "budget_usd": 50000000,
+      "mission_months": 24,
+      "difficulty": "cadet",
+      "required_objectives": ["weekly_revisit", "image_quality_min"],
+      "allowed_orbits": ["sso", "leo"],
+      "allowed_instruments": null,
+      "event_frequency_multiplier": 1.0,
+      "sandbox_mode": false
+    },
+    {
+      "id": "mars_recon",
+      "name": "Mars Reconnaissance",
+      "description": "Study Martian surface composition and geology.",
+      "objective": "Map surface composition across 3 Martian regions.",
+      "budget_usd": 500000000,
+      "mission_months": 12,
+      "difficulty": "engineer",
+      "required_objectives": ["composition_data", "multi_region"],
+      "allowed_orbits": ["lmo_mars"],
+      "allowed_instruments": null,
+      "event_frequency_multiplier": 1.5,
+      "sandbox_mode": false
+    },
+    {
+      "id": "deep_space_weather",
+      "name": "Deep Space Weather Monitor",
+      "description": "Watch solar activity from L1 for 5 years.",
+      "objective": "Provide continuous solar wind and flare monitoring.",
+      "budget_usd": 300000000,
+      "mission_months": 60,
+      "difficulty": "engineer",
+      "required_objectives": ["continuous_coverage", "radiation_survival"],
+      "allowed_orbits": ["l1"],
+      "allowed_instruments": null,
+      "event_frequency_multiplier": 2.0,
+      "sandbox_mode": false
+    },
+    {
+      "id": "sandbox",
+      "name": "Sandbox",
+      "description": "No constraints — experiment freely.",
+      "objective": "Design any mission you can imagine.",
+      "budget_usd": 10000000000,
+      "mission_months": 120,
+      "difficulty": "expert",
+      "required_objectives": [],
+      "allowed_orbits": null,
+      "allowed_instruments": null,
+      "event_frequency_multiplier": 0.5,
+      "sandbox_mode": true
+    }
+  ]
+}

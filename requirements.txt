@@ -1,0 +1,4 @@
+# TODO: pin versions once implementation begins
+# pygame>=2.5
+# customtkinter>=5.2
+# pytest>=8.0
