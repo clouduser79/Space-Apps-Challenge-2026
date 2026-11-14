@@ -63,23 +63,37 @@ class ResourceBudget:
         return self.time_limit_months - self.time_used_months
 
     def violations(self) -> list[str]:
-        """Hard constraint violations (empty list = feasible design)."""
+        """Hard constraint violations (empty list = feasible design).
+
+        Includes threshold crossings: margins under ~10-15% or any
+        resource at/over its limit force the player to change components.
+        """
         v = []
         if self.cost_spent_usd > self.budget_limit_usd:
-            v.append(f"Budget exceeded by ${ (self.cost_spent_usd - self.budget_limit_usd) / 1e6:.1f}M")
+            v.append(f"Budget exceeded by ${(self.cost_spent_usd - self.budget_limit_usd) / 1e6:.1f}M")
+        elif (self.budget_limit_usd
+              and self.budget_remaining_usd < self.budget_limit_usd * 0.10):
+            v.append("Budget margin under 10% — choose cheaper components")
         if self.mass_limit_kg and self.mass_used_kg > self.mass_limit_kg:
             v.append(f"Mass exceeded by {self.mass_used_kg - self.mass_limit_kg:.0f} kg")
+        elif (self.mass_limit_kg
+              and 0 < self.mass_margin_kg < self.mass_limit_kg * 0.10):
+            v.append("Mass margin under 10% — remove or shrink components")
         if self.power_limit_w and self.power_used_w > self.power_limit_w:
             v.append(f"Power exceeded by {self.power_used_w - self.power_limit_w:.0f} W")
+        elif (self.power_limit_w
+              and 0 < self.power_margin_w < self.power_limit_w * 0.15):
+            v.append("Power margin under 15% — add generation or cut loads")
+        if self.time_limit_months and self.time_used_months >= self.time_limit_months:
+            v.append("Mission time limit reached — shorten the mission")
+        if self.data_limit_gb and self.data_backlog_gb > self.data_limit_gb:
+            v.append(f"Data backlog {self.data_backlog_gb:.0f} GB exceeds storage "
+                     f"{self.data_limit_gb:.0f} GB — add downlink or storage")
         return v
 
     def warnings(self) -> list[str]:
         """Soft warnings — feasible but risky/tight."""
         w = []
-        if self.mass_limit_kg and 0 < self.mass_margin_kg < self.mass_limit_kg * 0.1:
-            w.append("Mass margin under 10% — no room for changes")
-        if self.power_limit_w and 0 < self.power_margin_w < self.power_limit_w * 0.15:
-            w.append("Power margin under 15% — eclipse periods may cause brownouts")
         if self.comms_limit_mbps and self.data_rate_check_needed():
             w.append("Data generation may exceed downlink capacity")
         return w

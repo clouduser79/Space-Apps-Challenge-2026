@@ -104,6 +104,7 @@ class Mission:
                 and orbit.id not in self.scenario.allowed_orbits):
             raise ValueError(f"{orbit.name} not allowed in this scenario")
         self.orbit = orbit
+        self._update_mass_limit()
 
     def set_destination(self, planet) -> None:
         """Set the destination planet (from planets.py catalog)."""
@@ -111,12 +112,17 @@ class Mission:
 
     def set_launch_vehicle(self, lv: LaunchVehicle) -> None:
         self.launch_vehicle = lv
-        # Mass limit comes from the vehicle's capacity to this orbit
-        if self.orbit:
-            cap = lv.capacity_for(self.orbit)
+        self._update_mass_limit()
+        self._sync_resources()
+
+    def _update_mass_limit(self) -> None:
+        """Mass limit comes from the LV's capacity to the selected orbit.
+        Recomputed whenever either one changes so order of selection
+        doesn't matter."""
+        if self.orbit and self.launch_vehicle:
+            cap = self.launch_vehicle.capacity_for(self.orbit)
             if cap:
                 self.resources.set_mass_limit(cap)
-        self._sync_resources()
 
     def _sync_resources(self) -> None:
         """Push spacecraft totals into the resource budget."""
@@ -125,6 +131,7 @@ class Mission:
         self.resources.power_used_w = sc.power_consumed_w
         self.resources.power_limit_w = sc.power_generated_w
         self.resources.comms_limit_mbps = sc.comms_mbps
+        self.resources.data_limit_gb = sc.data_capacity_gb
         self.resources.cost_spent_usd = (
             sc.total_cost_usd
             + (self.launch_vehicle.cost_usd if self.launch_vehicle else 0.0)
@@ -195,7 +202,12 @@ class Mission:
         """Run the mission simulation and return results."""
         from .simulation import MissionSimulator
         sim = MissionSimulator(self, seed=seed)
-        return sim.run()
+        result = sim.run()
+        # Reflect the run in the resource budget (time used, data volumes)
+        self.resources.time_used_months = result.months_elapsed
+        self.resources.data_generated_gb = result.data_generated_gb
+        self.resources.data_downlinked_gb = result.data_downlinked_gb
+        return result
 
     # --- serialization ---
     def to_dict(self) -> dict:

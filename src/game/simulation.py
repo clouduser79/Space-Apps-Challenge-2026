@@ -64,9 +64,10 @@ class MissionResult:
     objectives_met: list[str]
     objectives_failed: list[str]
     months_operated: float
-    data_generated_gb: float
-    data_downlinked_gb: float
-    data_backlog_gb: float
+    months_elapsed: float = 0.0     # cruise + ops — total mission duration
+    data_generated_gb: float = 0.0
+    data_downlinked_gb: float = 0.0
+    data_backlog_gb: float = 0.0
     events_triggered: list[str] = field(default_factory=list)
     failure_reason: str | None = None
     score_breakdown: dict = field(default_factory=dict)
@@ -109,6 +110,7 @@ class MissionSimulator:
                 objectives_met=[],
                 objectives_failed=m.scenario.required_objectives or ["launch"],
                 months_operated=0.0,
+                months_elapsed=0.0,
                 data_generated_gb=0.0,
                 data_downlinked_gb=0.0,
                 data_backlog_gb=0.0,
@@ -176,6 +178,7 @@ class MissionSimulator:
             objectives_met=objectives_met,
             objectives_failed=objectives_failed,
             months_operated=ops_months,
+            months_elapsed=cruise_months + ops_months,
             data_generated_gb=data_gen_gb,
             data_downlinked_gb=data_down_gb,
             data_backlog_gb=data_backlog,

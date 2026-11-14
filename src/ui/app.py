@@ -33,6 +33,8 @@ from src.ui.trajectory_view import TrajectoryCanvas
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
+SELECT_PLACEHOLDER = "Select..."
+
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
@@ -92,17 +94,17 @@ class GameApp(ctk.CTk):
         self.name_entry.grid(row=0, column=1, padx=15, pady=10)
 
         ctk.CTkLabel(card, text="Scenario:").grid(row=1, column=0, padx=15, pady=10, sticky="w")
+        scenario_labels = [f"{s.name} [{s.difficulty}]" for s in self.scenarios.values()]
         self.scenario_menu = ctk.CTkOptionMenu(
             card, width=360,
-            values=[f"{s.name} [{s.difficulty}]" for s in self.scenarios.values()],
+            values=[SELECT_PLACEHOLDER] + scenario_labels,
             command=self._on_scenario_pick)
         self.scenario_menu.grid(row=1, column=1, padx=15, pady=10)
+        self.scenario_menu.set(SELECT_PLACEHOLDER)
         self._scenario_labels = {f"{s.name} [{s.difficulty}]": s for s in self.scenarios.values()}
-        first = next(iter(self.scenarios.values()))
-        self.scenario_menu.set(f"{first.name} [{first.difficulty}]")
-        self._selected_scenario = first
+        self._selected_scenario = None
 
-        self.objective_label = ctk.CTkLabel(card, text=f"Objective: {first.objective}",
+        self.objective_label = ctk.CTkLabel(card, text="Objective: —",
                                             wraplength=420, justify="left")
         self.objective_label.grid(row=2, column=0, columnspan=2, padx=15, pady=(0, 15), sticky="w")
 
@@ -110,11 +112,18 @@ class GameApp(ctk.CTk):
                       command=self._start_mission).grid(row=3, column=0, columnspan=2, pady=15)
 
     def _on_scenario_pick(self, label: str) -> None:
+        if label == SELECT_PLACEHOLDER:
+            self._selected_scenario = None
+            self.objective_label.configure(text="Objective: —")
+            return
         self._selected_scenario = self._scenario_labels[label]
         self.objective_label.configure(
             text=f"Objective: {self._selected_scenario.objective}")
 
     def _start_mission(self) -> None:
+        if self._selected_scenario is None:
+            self._toast("Please select a scenario.")
+            return
         name = self.name_entry.get().strip() or "Commander"
         scenario = self._selected_scenario
         self.mission = Mission(name=f"{scenario.name} Mission", scenario=scenario)
@@ -167,6 +176,12 @@ class GameApp(ctk.CTk):
         self._build_dashboard_tab()
         self._build_sim_tab()
 
+        # Mouse-wheel scrolling for the scrollable lists (the built-in
+        # CTkScrollableFrame handler misses events over some child widgets)
+        self._enable_scroll_wheel(self.bus_list)
+        self._enable_scroll_wheel(self.payload_list)
+        self._enable_scroll_wheel(self.lv_list)
+
         # Navigation bar
         nav = ctk.CTkFrame(self.main, fg_color="transparent")
         nav.pack(fill="x", pady=(8, 0))
@@ -181,6 +196,19 @@ class GameApp(ctk.CTk):
 
         self.refresh_all()
         self._show_screen("bus")
+
+    def _enable_scroll_wheel(self, frame) -> None:
+        """Scroll a CTkScrollableFrame with the mouse wheel when the
+        pointer is anywhere over it (including child widgets)."""
+        def on_wheel(event):
+            if not hasattr(event, "delta") or event.delta == 0:
+                return
+            x, y = event.x_root, event.y_root
+            if not (frame.winfo_rootx() <= x <= frame.winfo_rootx() + frame.winfo_width()
+                    and frame.winfo_rooty() <= y <= frame.winfo_rooty() + frame.winfo_height()):
+                return
+            frame._parent_canvas.yview_scroll(-int(event.delta / 6), "units")
+        frame.bind_all("<MouseWheel>", on_wheel)
 
     # ----- Screen navigation -----
     def _show_screen(self, key: str) -> None:
@@ -208,8 +236,21 @@ class GameApp(ctk.CTk):
             self._show_screen(self._screen_order[self._screen_idx - 1])
 
     def _nav_next(self) -> None:
-        if self._screen_idx < len(self._screen_order) - 1:
-            self._show_screen(self._screen_order[self._screen_idx + 1])
+        if self._screen_idx >= len(self._screen_order) - 1:
+            return
+        current = self._screen_order[self._screen_idx]
+        if current == "orbit":
+            missing = []
+            if self.mission.orbit is None:
+                missing.append("an orbit")
+            if self.mission.launch_vehicle is None:
+                missing.append("a launch vehicle")
+            if self.mission.destination is None:
+                missing.append("a destination")
+            if missing:
+                self._toast("Please select " + ", ".join(missing) + ".")
+                return
+        self._show_screen(self._screen_order[self._screen_idx + 1])
 
     def _restart(self) -> None:
         """Tear down the designer and return to the welcome screen."""
@@ -227,22 +268,66 @@ class GameApp(ctk.CTk):
         self.bus_list = ctk.CTkScrollableFrame(tab)
         self.bus_list.pack(fill="both", expand=True, pady=5)
 
+    # Bus components grouped by similarity. "required" groups map to the
+    # systems missing_essentials() checks — shown first so players know
+    # what they must add for a feasible design.
+    _BUS_GROUPS = [
+        ("Power Generation", ["solar_small", "solar_standard", "solar_large", "rtg"]),
+        ("Communications", ["comms_basic", "comms_high"]),
+        ("Attitude Control", ["adcs_basic", "adcs_precise"]),
+        ("Avionics & Storage", ["avionics", "storage_expanded"]),
+        ("Structure", ["structure_small", "structure_standard", "structure_heavy"]),
+        ("Propulsion", ["propulsion_basic", "propulsion_advanced"]),
+    ]
+    _REQUIRED_GROUPS = {"Power Generation", "Communications",
+                        "Attitude Control", "Avionics & Storage"}
+
     def _refresh_bus(self) -> None:
         for w in self.bus_list.winfo_children():
             w.destroy()
         owned = {c.id for c in self.mission.spacecraft.bus}
-        for cid, comp in BUS_COMPONENTS.items():
-            row = ctk.CTkFrame(self.bus_list, fg_color="transparent")
-            row.pack(fill="x", pady=2)
-            ctk.CTkLabel(row, text=comp.impact_summary(), anchor="w",
-                         width=430).pack(side="left", padx=5)
-            if cid in owned:
-                btn = ctk.CTkButton(row, text="Remove", width=80, fg_color="#8B3A3A",
-                                    command=lambda c=cid: self._remove_bus(c))
-            else:
-                btn = ctk.CTkButton(row, text="Add", width=80,
-                                    command=lambda c=cid: self._add_bus(c))
-            btn.pack(side="right", padx=5)
+        placed = set()
+        for title, ids in self._BUS_GROUPS:
+            members = [(cid, BUS_COMPONENTS[cid]) for cid in ids
+                       if cid in BUS_COMPONENTS]
+            if not members:
+                continue
+            tag = " (required)" if title in self._REQUIRED_GROUPS else ""
+            ctk.CTkLabel(self.bus_list, text=title + tag,
+                         font=ctk.CTkFont(size=13, weight="bold"),
+                         text_color=("#E8A33D" if title in self._REQUIRED_GROUPS
+                                     else "#7FB3E8")).pack(anchor="w", padx=5, pady=(10, 2))
+            for cid, comp in members:
+                placed.add(cid)
+                row = ctk.CTkFrame(self.bus_list, fg_color="transparent")
+                row.pack(fill="x", pady=2)
+                ctk.CTkLabel(row, text=comp.impact_summary(), anchor="w",
+                             width=430).pack(side="left", padx=5)
+                if cid in owned:
+                    btn = ctk.CTkButton(row, text="Remove", width=80, fg_color="#8B3A3A",
+                                        command=lambda c=cid: self._remove_bus(c))
+                else:
+                    btn = ctk.CTkButton(row, text="Add", width=80,
+                                        command=lambda c=cid: self._add_bus(c))
+                btn.pack(side="right", padx=5)
+        # Any uncatalogued components fall through to a final section
+        rest = [(cid, c) for cid, c in BUS_COMPONENTS.items() if cid not in placed]
+        if rest:
+            ctk.CTkLabel(self.bus_list, text="Other",
+                         font=ctk.CTkFont(size=13, weight="bold"),
+                         text_color="#7FB3E8").pack(anchor="w", padx=5, pady=(10, 2))
+            for cid, comp in rest:
+                row = ctk.CTkFrame(self.bus_list, fg_color="transparent")
+                row.pack(fill="x", pady=2)
+                ctk.CTkLabel(row, text=comp.impact_summary(), anchor="w",
+                             width=430).pack(side="left", padx=5)
+                if cid in owned:
+                    btn = ctk.CTkButton(row, text="Remove", width=80, fg_color="#8B3A3A",
+                                        command=lambda c=cid: self._remove_bus(c))
+                else:
+                    btn = ctk.CTkButton(row, text="Add", width=80,
+                                        command=lambda c=cid: self._add_bus(c))
+                btn.pack(side="right", padx=5)
 
     def _add_bus(self, cid: str) -> None:
         self.mission.add_bus_component(BUS_COMPONENTS[cid])
@@ -261,25 +346,59 @@ class GameApp(ctk.CTk):
         self.payload_list = ctk.CTkScrollableFrame(tab)
         self.payload_list.pack(fill="both", expand=True, pady=5)
 
+    # Primary tag used to group instruments into similarity sections
+    _TAG_GROUPS = ["imaging", "spectroscopy", "subsurface", "space_weather",
+                   "sample_return", "comms"]
+    _TAG_LABELS = {
+        "imaging": "Imaging & Mapping",
+        "spectroscopy": "Spectroscopy & Composition",
+        "subsurface": "Subsurface & Ice",
+        "space_weather": "Space Weather",
+        "sample_return": "Sample Return",
+        "comms": "Communications",
+    }
+
+    def _inst_group(self, inst) -> str:
+        for tag in self._TAG_GROUPS:
+            if tag in inst.tags:
+                return tag
+        return "other"
+
     def _refresh_payload(self) -> None:
         for w in self.payload_list.winfo_children():
             w.destroy()
         owned = {i.id for i in self.mission.spacecraft.payload}
         allowed = self.mission.scenario.allowed_instruments
+
+        # Group instruments by similarity (primary capability tag)
+        groups: dict[str, list] = {}
         for iid, inst in self.instruments.items():
             if allowed and iid not in allowed:
                 continue
-            row = ctk.CTkFrame(self.payload_list, fg_color="transparent")
-            row.pack(fill="x", pady=2)
-            ctk.CTkLabel(row, text=inst.impact_summary() + f"  [{', '.join(inst.tags)}]",
-                         anchor="w", width=430).pack(side="left", padx=5)
-            if iid in owned:
-                btn = ctk.CTkButton(row, text="Remove", width=80, fg_color="#8B3A3A",
-                                    command=lambda i=iid: self._remove_inst(i))
-            else:
-                btn = ctk.CTkButton(row, text="Add", width=80,
-                                    command=lambda i=iid: self._add_inst(i))
-            btn.pack(side="right", padx=5)
+            groups.setdefault(self._inst_group(inst), []).append((iid, inst))
+
+        ordered = [g for g in self._TAG_GROUPS if g in groups]
+        if "other" in groups:
+            ordered.append("other")
+
+        for g in ordered:
+            header_text = (self._TAG_LABELS.get(g, "Other Instruments")
+                           if g != "other" else "Other Instruments")
+            ctk.CTkLabel(self.payload_list, text=header_text,
+                         font=ctk.CTkFont(size=13, weight="bold"),
+                         text_color="#7FB3E8").pack(anchor="w", padx=5, pady=(10, 2))
+            for iid, inst in groups[g]:
+                row = ctk.CTkFrame(self.payload_list, fg_color="transparent")
+                row.pack(fill="x", pady=2)
+                ctk.CTkLabel(row, text=inst.impact_summary() + f"  [{', '.join(inst.tags)}]",
+                             anchor="w", width=430).pack(side="left", padx=5)
+                if iid in owned:
+                    btn = ctk.CTkButton(row, text="Remove", width=80, fg_color="#8B3A3A",
+                                        command=lambda i=iid: self._remove_inst(i))
+                else:
+                    btn = ctk.CTkButton(row, text="Add", width=80,
+                                        command=lambda i=iid: self._add_inst(i))
+                btn.pack(side="right", padx=5)
 
     def _add_inst(self, iid: str) -> None:
         try:
@@ -297,35 +416,44 @@ class GameApp(ctk.CTk):
         tab = self.tab_orbit
         ctk.CTkLabel(tab, text="Orbit", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(10, 5))
         self.orbit_menu = ctk.CTkOptionMenu(
-            tab, values=[o.name for o in self.orbits.values()],
+            tab, values=[SELECT_PLACEHOLDER] + [o.name for o in self.orbits.values()],
             command=self._pick_orbit)
+        self.orbit_menu.set(SELECT_PLACEHOLDER)
         self.orbit_menu.pack(anchor="w", padx=10)
         self.orbit_desc = ctk.CTkLabel(tab, text="", wraplength=700, justify="left")
         self.orbit_desc.pack(anchor="w", padx=10, pady=5)
         self._orbit_by_name = {o.name: o for o in self.orbits.values()}
 
         ctk.CTkLabel(tab, text="Launch Vehicle", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(20, 5))
-        self.lv_menu = ctk.CTkOptionMenu(
-            tab, values=[lv.name for lv in self.launch_vehicles.values()],
-            command=self._pick_lv)
-        self.lv_menu.pack(anchor="w", padx=10)
+        self.lv_list = ctk.CTkScrollableFrame(tab, height=180)
+        self.lv_list.pack(fill="x", padx=10, pady=5)
         self.lv_desc = ctk.CTkLabel(tab, text="", wraplength=700, justify="left")
         self.lv_desc.pack(anchor="w", padx=10, pady=5)
         self._lv_by_name = {lv.name: lv for lv in self.launch_vehicles.values()}
+        self._refresh_lv_list()
 
         ctk.CTkLabel(tab, text="Destination", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(20, 5))
-        self.dest_menu = ctk.CTkOptionMenu(tab, values=["Select launch vehicle first"],
+        self.dest_menu = ctk.CTkOptionMenu(tab, values=[SELECT_PLACEHOLDER],
                                            command=self._pick_destination)
+        self.dest_menu.set(SELECT_PLACEHOLDER)
         self.dest_menu.pack(anchor="w", padx=10)
         self.dest_info = ctk.CTkLabel(tab, text="", wraplength=700, justify="left")
         self.dest_info.pack(anchor="w", padx=10, pady=5)
         self._refresh_destinations()
 
     def _pick_orbit(self, name: str) -> None:
+        if name == SELECT_PLACEHOLDER:
+            return
         o = self._orbit_by_name[name]
+        allowed = self.mission.scenario.allowed_orbits
+        if allowed and o.id not in allowed:
+            self.orbit_menu.set(SELECT_PLACEHOLDER)
+            self._toast(f"{o.name} is not allowed in this scenario.")
+            return
         try:
             self.mission.set_orbit(o)
         except ValueError as e:
+            self.orbit_menu.set(SELECT_PLACEHOLDER)
             self._toast(str(e))
             return
         self.orbit_desc.configure(text=f"{o.description} ({o.body}, {o.altitude_km:.0f} km)\n"
@@ -349,7 +477,44 @@ class GameApp(ctk.CTk):
             self.after(0, lambda: self.orbit_desc.configure(text=text))
         threading.Thread(target=worker, daemon=True).start()
 
+    # Launch vehicles grouped by similarity (size/cost tier)
+    _LV_TIERS = ["Light", "Medium", "Heavy"]
+
+    @staticmethod
+    def _lv_tier(lv) -> str:
+        if lv.cost_usd < 50_000_000:
+            return "Light"
+        if lv.cost_usd < 500_000_000:
+            return "Medium"
+        return "Heavy"
+
+    def _refresh_lv_list(self) -> None:
+        for w in self.lv_list.winfo_children():
+            w.destroy()
+        groups: dict[str, list] = {}
+        for lv in self.launch_vehicles.values():
+            groups.setdefault(self._lv_tier(lv), []).append(lv)
+        for tier in self._LV_TIERS:
+            if tier not in groups:
+                continue
+            ctk.CTkLabel(self.lv_list, text=tier,
+                         font=ctk.CTkFont(size=13, weight="bold"),
+                         text_color="#7FB3E8").pack(anchor="w", padx=5, pady=(8, 2))
+            for lv in sorted(groups[tier], key=lambda v: v.cost_usd):
+                selected = (self.mission and self.mission.launch_vehicle
+                            and self.mission.launch_vehicle.id == lv.id)
+                btn = ctk.CTkButton(
+                    self.lv_list,
+                    text=f"{lv.name} — ${lv.cost_usd / 1e6:.0f}M",
+                    anchor="w", height=30,
+                    fg_color=("#2E7D32" if selected else "#3A3A3A"),
+                    hover_color="#4A4A4A",
+                    command=lambda v=lv: self._pick_lv(v.name))
+                btn.pack(fill="x", padx=5, pady=1)
+
     def _pick_lv(self, name: str) -> None:
+        if name == SELECT_PLACEHOLDER:
+            return
         lv = self._lv_by_name[name]
         self.mission.set_launch_vehicle(lv)
         if self.mission.orbit:
@@ -357,27 +522,36 @@ class GameApp(ctk.CTk):
             self.lv_desc.configure(text=f"{lv.description}\n{reason}")
         else:
             self.lv_desc.configure(text=f"{lv.description}\n(Select an orbit first)")
+        self._refresh_lv_list()
         self._refresh_destinations()
         self.refresh_all()
 
     # ----- Destination -----
     def _refresh_destinations(self) -> None:
         lv = self.mission.launch_vehicle
+        if lv is None:
+            self.dest_menu.configure(values=[SELECT_PLACEHOLDER])
+            self.dest_menu.set(SELECT_PLACEHOLDER)
+            self.dest_info.configure(text="Select a launch vehicle first.")
+            return
         reachable = reachable_planets(lv)
         if not reachable:
-            self.dest_menu.configure(values=["No reachable destinations — pick a launch vehicle"])
-            self.dest_menu.set("No reachable destinations — pick a launch vehicle")
-            self.dest_info.configure(text="")
+            self.dest_menu.configure(values=[SELECT_PLACEHOLDER])
+            self.dest_menu.set(SELECT_PLACEHOLDER)
+            self.dest_info.configure(text="No reachable destinations for this launch vehicle.")
             return
         names = [p.name for p in reachable]
-        self.dest_menu.configure(values=names)
+        self.dest_menu.configure(values=[SELECT_PLACEHOLDER] + names)
         if self.mission.destination and self.mission.destination.name in names:
             self.dest_menu.set(self.mission.destination.name)
         else:
-            self.dest_menu.set(names[0])
-            self._pick_destination(names[0])
+            self.mission.destination = None
+            self.dest_menu.set(SELECT_PLACEHOLDER)
+            self.dest_info.configure(text="")
 
     def _pick_destination(self, name: str) -> None:
+        if name == SELECT_PLACEHOLDER:
+            return
         planet = PLANETS.get(name.lower())
         if planet is None:
             return
@@ -568,8 +742,8 @@ class GameApp(ctk.CTk):
             self.orbit_desc.configure(
                 text=f"{m.orbit.description} ({m.orbit.body}, {m.orbit.altitude_km:.0f} km)")
         if m.launch_vehicle:
-            self.lv_menu.set(m.launch_vehicle.name)
             self.lv_desc.configure(text=m.launch_vehicle.description)
+            self._refresh_lv_list()
         self._refresh_destinations()
         if m.destination:
             self._pick_destination(m.destination.name)
@@ -637,19 +811,20 @@ class GameApp(ctk.CTk):
             m = self.mission
             try:
                 errors, _ = m.validate_design()
-                header = ""
                 if errors and not m.scenario.sandbox_mode:
-                    header = ("DESIGN HAS ERRORS — simulation may fail.\n\n"
-                              + "\n".join(f"  X {e}" for e in errors)
-                              + "\n\nRunning anyway to show consequences...\n\n")
-                result = m.simulate()
-                score = ScoreEngine().score(result)
-                report = ScoreEngine().generate_report(result)
-                text = header + report + f"\n\n{'=' * 60}\nFINAL SCORE: {score} / 100\n"
-                try:
-                    save_result(result, score)
-                except Exception:
-                    pass
+                    text = ("Simulation blocked — your design has unresolved issues.\n"
+                            "Review the Dashboard tab for details, fix your design,\n"
+                            "then return here and try again.")
+                    score = -1
+                else:
+                    result = m.simulate()
+                    score = ScoreEngine().score(result)
+                    report = ScoreEngine().generate_report(result)
+                    text = report + f"\n\n{'=' * 60}\nFINAL SCORE: {score} / 100\n"
+                    try:
+                        save_result(result, score)
+                    except Exception:
+                        pass
             except Exception as e:
                 score = 0
                 text = f"SIMULATION CRASHED: {e}"
@@ -663,6 +838,7 @@ class GameApp(ctk.CTk):
         self.report_box.insert("end", text)
         self.sim_btn.configure(state="normal", text="LAUNCH SIMULATION")
         self._refresh_leaderboard()
+        self._refresh_dashboard()
         if score >= 90:
             self.success_label.configure(text="SUCCESS!", text_color="#7BE382")
         else:
@@ -678,6 +854,8 @@ class GameApp(ctk.CTk):
 
     def _toast(self, msg: str) -> None:
         top = ctk.CTkToplevel(self)
+        if hasattr(self, "lv_list"):
+            self._refresh_lv_list()
         top.title("Notice")
         top.geometry("380x120")
         top.transient(self)
