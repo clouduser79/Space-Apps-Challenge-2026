@@ -20,27 +20,37 @@ wizard — one screen at a time with Back/Next navigation:
 1. **Welcome** — mission briefing and start
 2. **Scenario** — pick a mission scenario (difficulty-scaled budget and
    event frequency, or sandbox mode)
-3. **Spacecraft bus** — add/remove structure, power (solar arrays, RTG),
-   comms, ADCS, and avionics components
-4. **Payload** — add/remove scientific instruments, each with mass,
-   power, cost, and data-rate trade-offs
-5. **Orbit & launch** — choose orbital regime, launch vehicle, and
-   destination planet
-6. **Dashboard** — live resource budgets (mass, power, cost, data, time)
-   with feasibility warnings
-7. **Flight path** — animated 2D trajectory visualization
+3. **Spacecraft bus** — add/remove components grouped by category
+   (Power Generation, Communications, Attitude Control, Avionics &
+   Storage, Structure, Propulsion); required groups are highlighted
+4. **Payload** — add/remove instruments grouped by capability tag
+   (imaging, spectroscopy, subsurface, space weather, sample return,
+   comms); each adds science but consumes mass, power, cost, and data
+5. **Orbit & launch** — choose orbital regime, launch vehicle (shown as
+   a tiered button list: Light / Medium / Heavy), and destination planet.
+   All dropdowns start blank; Next is blocked with a warning until
+   orbit, vehicle, and destination are selected, and scenario-disallowed
+   orbits snap back to blank
+6. **Dashboard** — live resource budgets (mass, power, cost, data
+   storage, time) with feasibility warnings
+7. **Flight path** — animated 2D trajectory with planet artwork and a
+   rotating rocket sprite
 8. **Planet facts** — educational facts about the chosen destination
-9. **Simulation** — run the mission and see the score + report
+9. **Simulation** — blocked if the design has unresolved errors
+   (sandbox mode excepted); shows score + report on success
 
 ### Spacecraft design
 
 - **Bus components**: structures (compact/standard/heavy), solar arrays,
-  RTG, comms systems, ADCS, avionics — each with mass, power draw/generation,
-  cost, and downlink capacity
+  RTG, comms systems, ADCS, avionics, and expanded storage — each with
+  mass, power draw/generation, cost, downlink capacity, and (for
+  avionics/storage) onboard data capacity in GB
 - **Instruments**: cameras, spectrometers, magnetometers, etc. — each
   adds science value but consumes resources and generates data
 - **Validation**: missing essentials (power, comms, ADCS, avionics) are
-  flagged; hard constraint violations (budget/mass/power) block flight
+  flagged; hard violations include budget/mass/power overruns plus
+  tight margins (<10% budget/mass, <15% power), exhausted mission time,
+  and data backlog exceeding onboard storage
 
 ### Orbits
 
@@ -83,8 +93,11 @@ Mission Analysis Tool, `gmat-win-R2026a/`) installation:
   distance)
 - **Animated flight path** (`src/ui/trajectory_view.py`): outbound
   transfer arc → orbit intercept → 2 loops around the destination →
-  spiral departure → return to Earth, with a rocket marker animating
-  the full mission profile
+  spiral departure → return to Earth. Planets render as real artwork
+  from `planetImages/` (Pillow-resized, cached), Earth included, and
+  the rocket flies the route as a rotated `rocket.png` sprite (falls
+  back to a triangle if the image is missing). Orbit routes are sized
+  from the displayed planet diameter, so resizing never clips the path
 
 ### Simulation engine
 
@@ -93,13 +106,15 @@ Mission Analysis Tool, `gmat-win-R2026a/`) installation:
 - **Launch** — success roll against launch vehicle reliability
 - **Cruise** — body-dependent transit time (Moon 3mo, Mars 8mo, etc.)
 - **Operations** — monthly loop accumulating science, generating data,
-  and downlinking at a duty-cycled rate
+  and downlinking at a duty-cycled rate; onboard storage capacity
+  (from bus components) caps how much data can be held
 - **Random events** — micrometeorite strikes, solar flares, ground
   station outages, propellant leaks, bonus science windows, computer
   glitches, safe-mode events (frequency scaled by scenario difficulty)
 - **Objectives** — scenario required objectives checked against
   capabilities (imaging, spectroscopy, sample return, etc.)
-- **Penalties** — data backlog and negative power margin reduce science
+- **Penalties** — data backlog and negative power margin reduce science;
+  total elapsed time (cruise + ops) is tracked against the mission limit
 
 ### Scoring & reporting
 
@@ -171,14 +186,19 @@ src/
     save_load.py           # Save/load missions + leaderboard
     gmat_bridge.py         # GMAT script generation & report parsing
   ui/
-    app.py                 # Main wizard UI (customtkinter)
-    trajectory_view.py     # 2D animated trajectory canvas
+    app.py                 # Main wizard UI (customtkinter): grouped
+                           #   pickers, blank-dropdown validation,
+                           #   scroll-wheel support, save/load, sim gate
+    trajectory_view.py     # 2D animated trajectory canvas with planet
+                           #   and rocket artwork (Pillow)
     spacecraft_view.py     # Spacecraft visualization stub
   data/
     instruments.json       # Instrument stats
     orbits.json            # Orbit definitions
     launch_vehicles.json   # Launch vehicle stats
     scenarios.json         # Mission scenarios
+planetImages/              # Planet PNG artwork for the trajectory view
+rocket.png                 # Rocket sprite for the transfer animation
 gmat-win-R2026a/           # Bundled GMAT astrodynamics engine
 ```
 
@@ -189,10 +209,10 @@ python -m src.main            # GUI (default)
 python -m src.main --console  # Console mode
 ```
 
-Requires Python 3.13+ and `customtkinter` (GUI mode only). GMAT
-integration works out of the box with the bundled `gmat-win-R2026a/`
-folder; if it's missing, the game falls back to simplified orbital
-data.
+Requires Python 3.13+ and the packages in `requirements.txt`
+(`customtkinter`, `pillow`). GMAT integration works out of the box with
+the bundled `gmat-win-R2026a/` folder; if it's missing, the game falls
+back to simplified orbital data.
 
 ## Key Design Trade-offs (the educational core)
 
