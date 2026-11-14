@@ -18,8 +18,8 @@ The desktop app (`customtkinter`) walks players through a sequential
 wizard — one screen at a time with Back/Next navigation:
 
 1. **Welcome** — mission briefing and start
-2. **Scenario** — pick a mission scenario (difficulty-scaled budget and
-   event frequency, or sandbox mode)
+2. **Scenario** — pick a mission scenario (difficulty-scaled event
+   frequency, or sandbox mode)
 3. **Spacecraft bus** — add/remove structure, power (solar arrays, RTG),
    comms, ADCS, and avionics components
 4. **Payload** — add/remove scientific instruments, each with mass,
@@ -129,14 +129,21 @@ Scores ≥ 90 show a **SUCCESS!** banner.
 
 ### Scenarios & difficulty
 
-`src/data/scenarios.json` defines mission scenarios with budgets,
-durations, required objectives/capabilities, orbit/instrument
-restrictions, and difficulty levels:
+`src/data/scenarios.json` defines mission scenarios with durations,
+required objectives/capabilities, orbit/instrument restrictions, and
+difficulty levels:
 
-- **Cadet** — 1.5× budget, half event frequency
+- **Cadet** — half event frequency
 - **Engineer** — baseline
-- **Expert** — 0.7× budget, 1.5× event frequency
+- **Expert** — 1.5× event frequency
 - **Sandbox** — unconstrained experimentation
+
+**Budget is set by the destination**, not the scenario
+(`budget_for()` in `src/game/planets.py`). It scales in a straight line
+with distance from Earth, from **$200M** for the Moon (384,400 km) up to
+**$7.1B** for Neptune (4.3 billion km) — e.g. Mars ≈ $561M, Saturn ≈ $2.1B.
+Until a destination is chosen the $200M minimum applies. The scenarios'
+`budget_usd` values are no longer used.
 
 ### Console mode
 
@@ -171,7 +178,14 @@ src/
     save_load.py           # Save/load missions + leaderboard
     gmat_bridge.py         # GMAT script generation & report parsing
   ui/
-    app.py                 # Main wizard UI (customtkinter)
+    app.py                 # Window shell: header, stepper, navigation, toasts
+    theme.py               # Design tokens: colours, type ramp, spacing
+    widgets.py             # Reusable cards, badges, meters, stepper, score ring
+    telemetry.py           # Live resource sidebar + readiness checks
+    assets.py              # Planet / rocket image loading (Pillow optional)
+    screens/               # One module per wizard step (welcome, bus &
+                           #   payload, orbit & launch, flight & facts,
+                           #   review, launch & results)
     trajectory_view.py     # 2D animated trajectory canvas
     spacecraft_view.py     # Spacecraft visualization stub
   data/
@@ -189,7 +203,9 @@ python -m src.main            # GUI (default)
 python -m src.main --console  # Console mode
 ```
 
-Requires Python 3.13+ and `customtkinter` (GUI mode only). GMAT
+Requires Python 3.13+, `customtkinter` and `pillow` (GUI mode only —
+`pip install -r requirements.txt`; without Pillow the planet artwork
+falls back to coloured shapes). GMAT
 integration works out of the box with the bundled `gmat-win-R2026a/`
 folder; if it's missing, the game falls back to simplified orbital
 data.
