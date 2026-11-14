@@ -1,66 +1,301 @@
 """Core mission model.
 
-Blueprint: represents a complete mission from concept to operation.
-Holds mission objective, spacecraft, orbit, launch vehicle, resources,
-and mission phase (design -> simulation -> evaluation).
+Represents a complete mission from concept to operation.
+Holds mission objective, scenario requirements, spacecraft, orbit,
+launch vehicle, resources, and mission phase.
 """
 
 from __future__ import annotations
 
-# TODO: import dataclasses / typing
-# TODO: import spacecraft, orbit, launch vehicle, instrument modules
+import enum
+from typing import TYPE_CHECKING
+
+from .instruments import Instrument, get_catalog as get_instrument_catalog
+from .launch_vehicle import LaunchVehicle, get_catalog as get_lv_catalog
+from .orbit import Orbit
+from .resources import ResourceBudget
+from .scenarios import Scenario
+from .spacecraft import Spacecraft
+
+if TYPE_CHECKING:
+    from .simulation import MissionResult
 
 
-class MissionPhase:
-    """Enum-like constants for mission lifecycle stages."""
-    # TODO: define phases: OBJECTIVE, SPACECRAFT, INSTRUMENTS,
-    #       ORBIT, LAUNCH, SIMULATION, EVALUATION
-    pass
+class MissionPhase(enum.Enum):
+    OBJECTIVE = "Define objective"
+    SPACECRAFT = "Design spacecraft"
+    PAYLOAD = "Select instruments"
+    ORBIT = "Choose orbit"
+    LAUNCH = "Select launch vehicle"
+    REVIEW = "Review & simulate"
+    DONE = "Complete"
 
 
 class Mission:
     """A complete space mission design."""
 
-    def __init__(self, name: str, objective: str) -> None:
+    def __init__(self, name: str, scenario: Scenario) -> None:
         self.name = name
-        self.objective = objective
-        # TODO: mission requirements derived from objective
-        #       (e.g., "image Mars surface" -> needs imaging instrument,
-        #        Mars orbit, comms delay tolerance, etc.)
+        self.scenario = scenario
+        self.objective = scenario.objective
         self.phase = MissionPhase.OBJECTIVE
 
-        # TODO: spacecraft = Spacecraft()
-        # TODO: orbit = Orbit()
-        # TODO: launch_vehicle = LaunchVehicle()
-        # TODO: resources = ResourceBudget()  (mass, power, budget, data, comms, time)
-        # TODO: players: list[Player] (1-4)
+        self.spacecraft = Spacecraft()
+        self.orbit: Orbit | None = None
+        self.launch_vehicle: LaunchVehicle | None = None
+        self.destination = None  # Planet from planets.py, set during design
 
-    # --- Design phase methods ---
+        self.resources = ResourceBudget(
+            budget_usd=scenario.effective_budget(),
+            mission_months=scenario.mission_months,
+        )
+        self.players: list = []  # populated by game loop
+
+        # Design state tracking for consequence feedback
+        self.design_log: list[str] = []
+
+    # --- objective / requirements ---
     def set_objective(self, objective: str) -> None:
-        """Define the mission objective and derive requirements."""
-        # TODO: store objective
-        # TODO: generate mission requirements checklist
-        # TODO: advance phase
-        raise NotImplementedError
+        """Confirm mission objective and derive requirements."""
+        self.objective = objective
+        self._derive_requirements()
+        self.phase = MissionPhase.SPACECRAFT
 
-    def validate_design(self) -> list[str]:
-        """Check the whole design for constraint violations.
+    def _derive_requirements(self) -> None:
+        """Translate scenario requirements into capability checks."""
+        reqs = []
+        for cap in self.scenario.required_capabilities:
+            reqs.append(f"Payload must provide '{cap}' capability")
+        for obj in self.scenario.required_objectives:
+            reqs.append(f"Mission objective: {obj.replace('_', ' ')}")
+        if self.scenario.sandbox_mode:
+            reqs.append("Sandbox mode — no hard requirements")
+        self.requirements = reqs
 
-        Returns a list of human-readable warnings/errors, e.g.:
-          - "Spacecraft mass (450 kg) exceeds launch vehicle capacity (300 kg)"
-          - "Power demand (800 W) exceeds available power (600 W)"
-          - "Data volume exceeds downlink capacity over mission lifetime"
+    # --- design mutation with consequence logging ---
+    def add_bus_component(self, component) -> None:
+        self.spacecraft.add_bus(component)
+        self._sync_resources()
+        self.design_log.append(
+            f"Added {component.name}: {component.impact_summary()}")
+
+    def remove_bus_component(self, component_id: str) -> bool:
+        ok = self.spacecraft.remove_bus(component_id)
+        if ok:
+            self._sync_resources()
+        return ok
+
+    def add_instrument(self, instrument: Instrument) -> None:
+        if self.scenario.allowed_instruments and instrument.id not in self.scenario.allowed_instruments:
+            raise ValueError(f"{instrument.name} not allowed in this scenario")
+        self.spacecraft.add_instrument(instrument)
+        self._sync_resources()
+        self.design_log.append(
+            f"Added instrument {instrument.name}: {instrument.impact_summary()}")
+
+    def remove_instrument(self, instrument_id: str) -> bool:
+        ok = self.spacecraft.remove_instrument(instrument_id)
+        if ok:
+            self._sync_resources()
+        return ok
+
+    def set_orbit(self, orbit: Orbit) -> None:
+        if (self.scenario.allowed_orbits
+                and orbit.id not in self.scenario.allowed_orbits):
+            raise ValueError(f"{orbit.name} not allowed in this scenario")
+        self.orbit = orbit
+
+    def set_destination(self, planet) -> None:
+        """Set the destination planet (from planets.py catalog)."""
+        self.destination = planet
+
+    def set_launch_vehicle(self, lv: LaunchVehicle) -> None:
+        self.launch_vehicle = lv
+        # Mass limit comes from the vehicle's capacity to this orbit
+        if self.orbit:
+            cap = lv.capacity_for(self.orbit)
+            if cap:
+                self.resources.set_mass_limit(cap)
+        self._sync_resources()
+
+    def _sync_resources(self) -> None:
+        """Push spacecraft totals into the resource budget."""
+        sc = self.spacecraft
+        self.resources.mass_used_kg = sc.total_mass_kg
+        self.resources.power_used_w = sc.power_consumed_w
+        self.resources.power_limit_w = sc.power_generated_w
+        self.resources.comms_limit_mbps = sc.comms_mbps
+        self.resources.cost_spent_usd = (
+            sc.total_cost_usd
+            + (self.launch_vehicle.cost_usd if self.launch_vehicle else 0.0)
+        )
+
+    # --- validation ---
+    def validate_design(self) -> tuple[list[str], list[str]]:
+        """Check the whole design.
+
+        Returns (errors, warnings). Errors = hard violations.
         """
-        # TODO: check mass vs launch vehicle payload capacity
-        # TODO: check power budget (generation vs consumption)
-        # TODO: check data volume vs comms capacity
-        # TODO: check budget totals
-        # TODO: check orbit/launch vehicle compatibility
-        raise NotImplementedError
+        errors: list[str] = []
+        warnings: list[str] = []
 
-    def simulate(self) -> "MissionResult":
+        # Essential systems
+        for missing in self.spacecraft.missing_essentials():
+            errors.append(f"Missing essential system: {missing}")
+
+        # Resource violations
+        errors.extend(self.resources.violations())
+        warnings.extend(self.resources.warnings())
+
+        # Orbit / launch vehicle compatibility
+        if self.orbit and self.launch_vehicle:
+            ok, reason = self.launch_vehicle.can_launch(
+                self.spacecraft.total_mass_kg, self.orbit)
+            if not ok:
+                errors.append(f"Launch incompatibility: {reason}")
+        elif not self.orbit:
+            errors.append("No orbit selected")
+        elif not self.launch_vehicle:
+            errors.append("No launch vehicle selected")
+
+        # Power balance
+        if self.spacecraft.power_margin_w < 0:
+            errors.append(
+                f"Power deficit: consuming {self.spacecraft.power_consumed_w:.0f} W "
+                f"but only generating {self.spacecraft.power_generated_w:.0f} W")
+
+        # Objective capability coverage
+        caps = self.spacecraft.capabilities
+        for cap in self.scenario.required_capabilities:
+            if cap not in caps:
+                errors.append(
+                    f"Objective unmet: no instrument provides '{cap}' capability")
+
+        # Data vs comms feasibility (rough check)
+        if (self.spacecraft.comms_mbps > 0
+                and self.spacecraft.data_rate_mbps > self.spacecraft.comms_mbps * 2):
+            warnings.append(
+                f"Data generation ({self.spacecraft.data_rate_mbps:.0f} Mbps) "
+                f"far exceeds downlink ({self.spacecraft.comms_mbps:.0f} Mbps) — "
+                "expect data backlog")
+
+        # Sandbox mode: violations become warnings
+        if self.scenario.sandbox_mode:
+            warnings.extend(errors)
+            errors = []
+
+        return errors, warnings
+
+    def can_simulate(self) -> bool:
+        errors, _ = self.validate_design()
+        return len(errors) == 0
+
+    # --- simulation ---
+    def simulate(self, seed: int | None = None) -> "MissionResult":
         """Run the mission simulation and return results."""
-        # TODO: step through mission timeline (launch, cruise, ops)
-        # TODO: apply random events / anomalies
-        # TODO: compute science return, resource usage, success metrics
-        raise NotImplementedError
+        from .simulation import MissionSimulator
+        sim = MissionSimulator(self, seed=seed)
+        return sim.run()
+
+    # --- serialization ---
+    def to_dict(self) -> dict:
+        """Serialize the mission design to a JSON-friendly dict."""
+        return {
+            "name": self.name,
+            "scenario_id": self.scenario.id,
+            "objective": self.objective,
+            "phase": self.phase.value,
+            "bus_ids": [c.id for c in self.spacecraft.bus],
+            "instrument_ids": [i.id for i in self.spacecraft.payload],
+            "orbit_id": self.orbit.id if self.orbit else None,
+            "launch_vehicle_id": (self.launch_vehicle.id
+                                  if self.launch_vehicle else None),
+            "destination_id": self.destination.id if self.destination else None,
+            "design_log": list(self.design_log),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Mission":
+        """Rebuild a mission from a dict produced by to_dict()."""
+        import json as _json
+        from pathlib import Path as _Path
+
+        from .planets import PLANETS
+        from .scenarios import get_scenarios
+        from .spacecraft import BUS_COMPONENTS
+
+        scenario = get_scenarios()[data["scenario_id"]]
+        mission = cls(name=data["name"], scenario=scenario)
+        mission.objective = data.get("objective", scenario.objective)
+        mission.phase = MissionPhase(data.get("phase", MissionPhase.OBJECTIVE.value))
+        mission.design_log = list(data.get("design_log", []))
+
+        # Rebuild spacecraft from catalog IDs
+        for cid in data.get("bus_ids", []):
+            if cid in BUS_COMPONENTS:
+                mission.spacecraft.add_bus(BUS_COMPONENTS[cid])
+        inst_cat = get_instrument_catalog()
+        for iid in data.get("instrument_ids", []):
+            if iid in inst_cat:
+                mission.spacecraft.add_instrument(inst_cat[iid])
+
+        # Rebuild orbit from orbits.json
+        orbit_id = data.get("orbit_id")
+        if orbit_id:
+            orbit_path = (_Path(__file__).resolve().parent.parent
+                          / "data" / "orbits.json")
+            raw = _json.loads(orbit_path.read_text(encoding="utf-8"))
+            for e in raw["orbits"]:
+                if e["id"] == orbit_id:
+                    mission.orbit = Orbit(
+                        id=e["id"], name=e["name"], body=e["body"],
+                        altitude_km=float(e["altitude_km"]),
+                        inclination_deg=float(e["inclination_deg"]),
+                        period_hours=float(e["period_hours"]),
+                        description=e.get("description", ""),
+                        coverage=e.get("coverage", "global"),
+                        eclipse_fraction=float(e.get("eclipse_fraction", 0.0)),
+                        drag_factor=float(e.get("drag_factor", 0.0)),
+                        comms_passes_per_day=int(e.get("comms_passes_per_day", 0)),
+                        radiation_level=int(e.get("radiation_level", 0)),
+                        revisit_days=float(e.get("revisit_days", 7.0)),
+                        comms_pass_minutes=float(e.get("comms_pass_minutes", 10.0)),
+                        station_keeping_dv_m_s_per_year=float(
+                            e.get("station_keeping_dv_m_s_per_year", 0.0)))
+                    break
+
+        # Rebuild launch vehicle
+        lv_id = data.get("launch_vehicle_id")
+        if lv_id:
+            lv_cat = get_lv_catalog()
+            if lv_id in lv_cat:
+                mission.set_launch_vehicle(lv_cat[lv_id])
+
+        # Rebuild destination planet
+        dest_id = data.get("destination_id")
+        if dest_id and dest_id in PLANETS:
+            mission.set_destination(PLANETS[dest_id])
+
+        mission._sync_resources()
+        return mission
+
+    # --- display ---
+    def dashboard(self) -> str:
+        lines = [
+            f"MISSION: {self.name}",
+            f"Scenario: {self.scenario.name} ({self.scenario.difficulty})",
+            f"Objective: {self.objective}",
+            f"Phase: {self.phase.value}",
+            "",
+            self.spacecraft.summary(),
+            "",
+            self.resources.dashboard(),
+        ]
+        if self.orbit:
+            lines.append(f"Orbit: {self.orbit.name} ({self.orbit.body}, "
+                         f"{self.orbit.altitude_km:.0f} km)")
+        if self.launch_vehicle:
+            lines.append(f"Launch: {self.launch_vehicle.name} "
+                         f"(${self.launch_vehicle.cost_usd / 1e6:.0f}M, "
+                         f"reliability {self.launch_vehicle.reliability:.0%})")
+        return "\n".join(lines)
