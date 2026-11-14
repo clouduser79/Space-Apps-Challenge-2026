@@ -18,6 +18,7 @@ import customtkinter as ctk
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+from src.game.gmat_bridge import get_bridge
 from src.game.instruments import get_catalog as get_instruments
 from src.game.launch_vehicle import get_catalog as get_launch_vehicles
 from src.game.mission import Mission
@@ -327,10 +328,26 @@ class GameApp(ctk.CTk):
         except ValueError as e:
             self._toast(str(e))
             return
-        self.orbit_desc.configure(text=f"{o.description} ({o.body}, {o.altitude_km:.0f} km)")
+        self.orbit_desc.configure(text=f"{o.description} ({o.body}, {o.altitude_km:.0f} km)\n"
+                                  "Computing real orbital parameters via GMAT...")
+        self._fetch_gmat_orbit(o)
         if self.mission.destination:
             self._pick_destination(self.mission.destination.name)
         self.refresh_all()
+
+    def _fetch_gmat_orbit(self, orbit) -> None:
+        """Run GMAT in a background thread and show real orbital data."""
+        def worker():
+            data = get_bridge().orbit_properties(
+                orbit.body, orbit.altitude_km, orbit.inclination_deg)
+            if data is None:
+                return
+            text = (f"{orbit.description} ({orbit.body}, {orbit.altitude_km:.0f} km)\n"
+                    f"GMAT: velocity {data['velocity_km_s']:.2f} km/s | "
+                    f"period {data['period_min']:.1f} min | "
+                    f"SMA {data['sma_km']:.0f} km | ecc {data['ecc']:.4f}")
+            self.after(0, lambda: self.orbit_desc.configure(text=text))
+        threading.Thread(target=worker, daemon=True).start()
 
     def _pick_lv(self, name: str) -> None:
         lv = self._lv_by_name[name]
