@@ -1,5 +1,5 @@
 {
-  "comment": "TODO: populate with orbit definitions. Each entry needs: name, body, altitude_km, inclination_deg, period_hours, description, plus computed/derived fields (coverage, eclipse_fraction, drag_factor, comms_passes_per_day, radiation_level).",
+  "comment": "Orbit definitions. coverage: global|regional|fixed_disc. eclipse_fraction 0-1, drag_factor 0-1, radiation_level 0-5.",
   "orbits": [
     {
       "id": "leo",
@@ -8,7 +8,14 @@
       "altitude_km": 400,
       "inclination_deg": 51.6,
       "period_hours": 1.5,
-      "description": "Close to Earth: easy comms, but atmospheric drag limits lifetime."
+      "description": "Close to Earth: easy comms, but atmospheric drag limits lifetime.",
+      "coverage": "global",
+      "eclipse_fraction": 0.35,
+      "drag_factor": 0.8,
+      "comms_passes_per_day": 6,
+      "radiation_level": 1,
+      "revisit_days": 3,
+      "comms_pass_minutes": 8
     },
     {
       "id": "sso",
@@ -17,7 +24,14 @@
       "altitude_km": 600,
       "inclination_deg": 97.8,
       "period_hours": 1.6,
-      "description": "Constant sunlight for power; consistent lighting for imaging."
+      "description": "Constant sunlight for power; consistent lighting for imaging.",
+      "coverage": "global",
+      "eclipse_fraction": 0.05,
+      "drag_factor": 0.4,
+      "comms_passes_per_day": 5,
+      "radiation_level": 1,
+      "revisit_days": 1,
+      "comms_pass_minutes": 8
     },
     {
       "id": "geo",
@@ -26,7 +40,14 @@
       "altitude_km": 35786,
       "inclination_deg": 0,
       "period_hours": 24,
-      "description": "Fixed over one longitude; great for comms, poor Earth coverage."
+      "description": "Fixed over one longitude; great for comms, poor Earth coverage.",
+      "coverage": "fixed_disc",
+      "eclipse_fraction": 0.02,
+      "drag_factor": 0.0,
+      "comms_passes_per_day": 24,
+      "radiation_level": 2,
+      "revisit_days": 30,
+      "comms_pass_minutes": 15
     },
     {
       "id": "l1",
@@ -35,7 +56,15 @@
       "altitude_km": 1500000,
       "inclination_deg": 0,
       "period_hours": 720,
-      "description": "Uninterrupted solar view; requires station-keeping fuel."
+      "description": "Uninterrupted solar view; requires station-keeping fuel.",
+      "coverage": "fixed_disc",
+      "eclipse_fraction": 0.0,
+      "drag_factor": 0.0,
+      "comms_passes_per_day": 2,
+      "radiation_level": 3,
+      "revisit_days": 365,
+      "comms_pass_minutes": 30,
+      "station_keeping_dv_m_s_per_year": 5.0
     },
     {
       "id": "lmo",
@@ -44,7 +73,14 @@
       "altitude_km": 100,
       "inclination_deg": 90,
       "period_hours": 2,
-      "description": "Close lunar mapping; limited comms windows from Earth."
+      "description": "Close lunar mapping; limited comms windows from Earth.",
+      "coverage": "global",
+      "eclipse_fraction": 0.5,
+      "drag_factor": 0.0,
+      "comms_passes_per_day": 1,
+      "radiation_level": 2,
+      "revisit_days": 7,
+      "comms_pass_minutes": 20
     },
     {
       "id": "lmo_mars",
@@ -53,7 +89,14 @@
       "altitude_km": 400,
       "inclination_deg": 93,
       "period_hours": 2,
-      "description": "Mars surface observation; long cruise phase required."
+      "description": "Mars surface observation; long cruise phase required.",
+      "coverage": "global",
+      "eclipse_fraction": 0.4,
+      "drag_factor": 0.1,
+      "comms_passes_per_day": 2,
+      "radiation_level": 2,
+      "revisit_days": 5,
+      "comms_pass_minutes": 15
     }
   ]
 }

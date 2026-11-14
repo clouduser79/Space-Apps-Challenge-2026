@@ -11,6 +11,25 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from .mission import Mission
+    from .simulation import MissionResult
+
+SAVE_DIR = Path(__file__).parent / "saves"
+HISTORY_FILE = SAVE_DIR / "history.jsonl"
+
+
+def _ensure_dir() -> None:
+    SAVE_DIR.mkdir(parents=True, exist_ok=True)
+
+def save_mission(mission: "Mission", filename: str) -> Path:
+    """Serialize a mission design to JSON."""
+    _ensure_dir()
+    path = SAVE_DIR / filename
+    if path.suffix != ".json":
+        path = path.with_suffix(".json")
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(mission.to_dict(), f, indent=2)
+    return path
     from .mission import Mission, MissionResult
 
 SAVE_DIR = Path(__file__).parent / "saves"
@@ -37,6 +56,8 @@ def load_mission(filename: str) -> "Mission":
     path = SAVE_DIR / filename
     if path.suffix != ".json":
         path = path.with_suffix(".json")
+    with path.open(encoding="utf-8") as f:
+        return Mission.from_dict(json.load(f))
     with path.open(encoding = "utf-8") as f:
         return Mission.from_dict(json.load(f))
     #raise NotImplementedError
@@ -44,6 +65,7 @@ def load_mission(filename: str) -> "Mission":
 
 def save_result(result: "MissionResult", score: float) -> None:
     """Append a mission result to the leaderboard/history."""
+    _ensure_dir()
     # TODO: append to saves/history.jsonl (JSON Lines for easy append)
     SAVE_DIR.mkdir(parents=True, exist_ok=True)
     entry = {**result.to_dict(), "score": score}
@@ -57,6 +79,9 @@ def load_leaderboard() -> list[dict]:
     # TODO: read history.jsonl -> list of dicts -> sort desc by score
     if not HISTORY_FILE.exists():
         return []
+    with HISTORY_FILE.open(encoding="utf-8") as f:
+        entries = [json.loads(line) for line in f if line.strip()]
+    return sorted(entries, key=lambda e: e["score"], reverse=True)
     with HISTORY_FILE.open(encoidng = "utf-8") as f:
         entries = [json.loads(line) for line in f if line.strip()]
     return sorted(entries, key=lambda e: e["score"], reverse = True)
