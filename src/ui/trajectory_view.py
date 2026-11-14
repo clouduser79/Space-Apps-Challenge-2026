@@ -10,11 +10,21 @@ from __future__ import annotations
 
 import math
 import tkinter as tk
+from pathlib import Path
 from typing import Callable
 
 import customtkinter as ctk
 
 from src.game.planets import EARTH, Planet
+
+try:
+    from PIL import Image, ImageTk
+    _HAS_PIL = True
+except ImportError:
+    _HAS_PIL = False
+
+IMAGE_DIR = Path(__file__).resolve().parents[2] / "planetImages"
+ROCKET_IMAGE = Path(__file__).resolve().parents[2] / "rocket.png"
 
 BG = "#242424"
 SUN_COLOR = "#F4D03F"
@@ -39,9 +49,68 @@ class TrajectoryCanvas(ctk.CTkFrame):
         self._dest: Planet | None = None
         self._anim_after = None
         self._rocket_id = None
+        self._rocket_img_id = None
         self._path: list[tuple[float, float]] = []
         self._last_size = (0, 0)
+        self._img_cache: dict[tuple[str, int], tk.PhotoImage] = {}
         self.canvas.bind("<Configure>", self._on_resize)
+
+    def _planet_photo(self, planet: Planet, diameter_px: int
+                      ) -> tk.PhotoImage | None:
+        """Load (and cache) a planet image resized to diameter_px."""
+        if not _HAS_PIL:
+            return None
+        key = (planet.id, diameter_px)
+        if key in self._img_cache:
+            return self._img_cache[key]
+        path = IMAGE_DIR / f"{planet.id}.png"
+        if not path.exists():
+            return None
+        img = Image.open(path).convert("RGBA")
+        img = img.resize((diameter_px, diameter_px), Image.LANCZOS)
+        photo = ImageTk.PhotoImage(img)
+        self._img_cache[key] = photo  # keep reference so Tk doesn't GC it
+        return photo
+
+    def _rocket_photo(self, angle_deg: float, size: int = 28
+                      ) -> tk.PhotoImage | None:
+        """Load rocket.png rotated so its nose points along angle_deg
+        (screen coords, degrees clockwise from +x). Cached per angle."""
+        if not _HAS_PIL or not ROCKET_IMAGE.exists():
+            return None
+        bucket = round(angle_deg / 5) * 5  # 5-degree buckets limit cache size
+        key = ("rocket", bucket, size)
+        if key in self._img_cache:
+            return self._img_cache[key]
+        img = Image.open(ROCKET_IMAGE).convert("RGBA")
+        img.thumbnail((size, size), Image.LANCZOS)
+        # Rocket art points up (-90 deg on screen); rotate to travel direction
+        img = img.rotate(-(bucket + 90), expand=True, resample=Image.BICUBIC)
+        photo = ImageTk.PhotoImage(img)
+        self._img_cache[key] = photo
+        return photo
+
+    def _draw_planet(self, c: tk.Canvas, planet: Planet,
+                     pos: tuple[float, float], diameter_px: int) -> float:
+        """Draw a planet image (or colored fallback) at pos.
+        Returns the on-screen radius in px so routes can orbit it."""
+        r = diameter_px / 2
+        photo = self._planet_photo(planet, diameter_px)
+        if photo is not None:
+            c.create_image(pos[0], pos[1], image=photo)
+        else:
+            c.create_oval(pos[0] - r, pos[1] - r, pos[0] + r, pos[1] + r,
+                          fill=planet.color, outline="white")
+            if planet.id == "saturn":
+                c.create_oval(pos[0] - r - 14, pos[1] - (r + 14) // 3,
+                              pos[0] + r + 14, pos[1] + (r + 14) // 3,
+                              outline="#C9B896", width=3)
+                c.create_arc(pos[0] - r - 14, pos[1] - (r + 14) // 3,
+                             pos[0] + r + 14, pos[1] + (r + 14) // 3,
+                             start=0, extent=180, outline="#C9B896", width=3)
+        c.create_text(pos[0], pos[1] + r + 18, text=planet.name,
+                      fill="white", font=("Segoe UI", 11, "bold"))
+        return r
 
     def _canvas_w(self) -> float:
         w = self.canvas.winfo_width()
@@ -123,7 +192,7 @@ class TrajectoryCanvas(ctk.CTkFrame):
         spiral departure -> return to Earth."""
         p0 = self._earth_pos()
         p2 = self._dest_pos(dest)
-        r = dest.radius_px
+        r = float(dest.radius_px)  # displayed radius (image diameter / 2)
         intercept_angle = math.pi  # near-side of orbit, facing Earth
         intercept = self._orbit_point(p2, r, intercept_angle)
         out_ctrl = self._control_point(p0, intercept, arc_dir=-1.0)
@@ -162,7 +231,9 @@ class TrajectoryCanvas(ctk.CTkFrame):
 
         p0 = self._earth_pos()
         p2 = self._dest_pos(dest)
-        r = dest.radius_px
+        # Display size drives everything: routes orbit the rendered planet
+        dest_diameter = dest.radius_px * 2
+        r = dest_diameter / 2
         intercept_angle = math.pi
         intercept = self._orbit_point(p2, r, intercept_angle)
         out_ctrl = self._control_point(p0, intercept, arc_dir=-1.0)
@@ -193,35 +264,19 @@ class TrajectoryCanvas(ctk.CTkFrame):
         c.create_line(*pts, fill=RETURN_COLOR, width=2, dash=(6, 4))
 
         # Orbit ellipse around destination (dashed)
-        orbit_pts = self._orbit_points(p2, dest.radius_px, loops=1, n_per_loop=80)
+        orbit_pts = self._orbit_points(p2, r, loops=1, n_per_loop=80)
         flat = []
         for x, y in orbit_pts:
             flat.extend([x, y])
         flat.extend([orbit_pts[0][0], orbit_pts[0][1]])
         c.create_line(*flat, fill=ORBIT_COLOR, width=1, dash=(3, 3))
 
-        # Earth
-        c.create_oval(p0[0] - EARTH.radius_px, p0[1] - EARTH.radius_px,
-                      p0[0] + EARTH.radius_px, p0[1] + EARTH.radius_px,
-                      fill=EARTH.color, outline="white")
-        c.create_text(p0[0], p0[1] + EARTH.radius_px + 18, text="Earth",
-                      fill="white", font=("Segoe UI", 11, "bold"))
+        # Earth (image if available)
+        earth_diameter = EARTH.radius_px * 2
+        self._draw_planet(c, EARTH, p0, earth_diameter)
 
-        # Destination planet
-        if dest.id == "saturn":
-            # Rings behind the planet
-            c.create_oval(p2[0] - r - 14, p2[1] - (r + 14) // 3,
-                          p2[0] + r + 14, p2[1] + (r + 14) // 3,
-                          outline="#C9B896", width=3)
-        c.create_oval(p2[0] - r, p2[1] - r, p2[0] + r, p2[1] + r,
-                      fill=dest.color, outline="white")
-        if dest.id == "saturn":
-            # Rings in front (lower half)
-            c.create_arc(p2[0] - r - 14, p2[1] - (r + 14) // 3,
-                         p2[0] + r + 14, p2[1] + (r + 14) // 3,
-                         start=0, extent=180, outline="#C9B896", width=3)
-        c.create_text(p2[0], p2[1] + r + 18, text=dest.name,
-                      fill="white", font=("Segoe UI", 11, "bold"))
+        # Destination planet (image includes its own rings for Saturn)
+        self._draw_planet(c, dest, p2, dest_diameter)
 
         # Potential landing site — orbit intercept point (near-side, facing Earth)
         land = intercept
@@ -261,6 +316,7 @@ class TrajectoryCanvas(ctk.CTkFrame):
     def clear(self) -> None:
         self.canvas.delete("all")
         self._rocket_id = None
+        self._rocket_img_id = None
         self._path = []
 
     # ---------- animation ----------
@@ -273,9 +329,11 @@ class TrajectoryCanvas(ctk.CTkFrame):
         if not self._path:
             return
 
-        # Rocket: small triangle
+        # Rocket: image if available, else small triangle
         self._rocket_id = c.create_polygon(0, 0, 0, 0, 0, 0,
-                                           fill=ROCKET_COLOR, outline="")
+                                           fill=ROCKET_COLOR, outline="",
+                                           state="hidden")
+        self._rocket_img_id = c.create_image(0, 0, image="")
         steps = len(self._path) - 1
         interval = max(10, duration_ms // steps)
         state = {"i": 0}
@@ -289,12 +347,21 @@ class TrajectoryCanvas(ctk.CTkFrame):
             x, y = self._path[i]
             x2, y2 = self._path[min(i + 1, steps)]
             ang = math.degrees(math.atan2(y2 - y, x2 - x))
-            size = 9
-            rad = math.radians(ang)
-            tip = (x + size * math.cos(rad), y + size * math.sin(rad))
-            left = (x - size * math.cos(rad - 0.5), y - size * math.sin(rad - 0.5))
-            right = (x - size * math.cos(rad + 0.5), y - size * math.sin(rad + 0.5))
-            c.coords(self._rocket_id, *tip, *left, *right)
+            photo = self._rocket_photo(ang)
+            if photo is not None:
+                c.itemconfig(self._rocket_img_id, image=photo)
+                c.coords(self._rocket_img_id, x, y)
+                c.itemconfig(self._rocket_img_id, state="normal")
+                c.itemconfig(self._rocket_id, state="hidden")
+            else:
+                c.itemconfig(self._rocket_img_id, state="hidden")
+                c.itemconfig(self._rocket_id, state="normal")
+                size = 9
+                rad = math.radians(ang)
+                tip = (x + size * math.cos(rad), y + size * math.sin(rad))
+                left = (x - size * math.cos(rad - 0.5), y - size * math.sin(rad - 0.5))
+                right = (x - size * math.cos(rad + 0.5), y - size * math.sin(rad + 0.5))
+                c.coords(self._rocket_id, *tip, *left, *right)
             state["i"] += 1
             self._anim_after = self.after(interval, step)
 

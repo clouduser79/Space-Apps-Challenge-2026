@@ -25,13 +25,15 @@ class Component:
     power_gen_w: float = 0.0   # positive = generates power (solar arrays, RTG)
     comms_mbps: float = 0.0    # downlink capacity contributed
     description: str = ""
+    storage_gb: float = 0.0    # onboard data storage capacity
 
     def impact_summary(self) -> str:
         gen = f", +{self.power_gen_w:g} W gen" if self.power_gen_w else ""
         comms = f", {self.comms_mbps:g} Mbps downlink" if self.comms_mbps else ""
+        storage = f", {self.storage_gb:g} GB storage" if self.storage_gb else ""
         return (f"{self.name}: +{self.mass_kg:g} kg, "
                 f"{'-' if self.power_w else '+'}{abs(self.power_w):g} W{gen}, "
-                f"+${self.cost_usd / 1e6:.1f}M{comms}")
+                f"+${self.cost_usd / 1e6:.1f}M{comms}{storage}")
 
 
 # Bus component catalog — the "realistic or simplified spacecraft model".
@@ -61,7 +63,11 @@ BUS_COMPONENTS: dict[str, Component] = {
         power_gen_w=300, description="Nuclear power for deep space / eclipse-heavy orbits."),
     "avionics": Component(
         "avionics", "Onboard Computer", 12, 25, 4_000_000,
-        description="Command & data handling."),
+        description="Command & data handling.", storage_gb=500),
+    "storage_expanded": Component(
+        "storage_expanded", "Expanded Storage", 10, 5, 12_000_000,
+        description="High-capacity recorder for data-heavy missions.",
+        storage_gb=2000),
     "adcs_basic": Component(
         "adcs_basic", "Basic Attitude Control", 8, 15, 3_000_000,
         description="Nadir pointing only."),
@@ -137,6 +143,11 @@ class Spacecraft:
     @property
     def comms_mbps(self) -> float:
         return sum(c.comms_mbps for c in self.bus)
+
+    @property
+    def data_capacity_gb(self) -> float:
+        """Total onboard storage across bus components."""
+        return sum(c.storage_gb for c in self.bus)
 
     @property
     def data_rate_mbps(self) -> float:
