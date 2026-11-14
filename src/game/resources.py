@@ -7,6 +7,14 @@ produces these. The dashboard displays them live.
 from __future__ import annotations
 
 
+def _usd(amount: float) -> str:
+    """$51.0M / $4.0B / $1.2T — budgets now span millions to trillions."""
+    for scale, unit in ((1e12, "T"), (1e9, "B")):
+        if abs(amount) >= scale:
+            return f"${amount / scale:.1f}{unit}"
+    return f"${amount / 1e6:.1f}M"
+
+
 class ResourceBudget:
     """Tracks mission resource limits and consumption."""
 
@@ -70,7 +78,7 @@ class ResourceBudget:
         """
         v = []
         if self.cost_spent_usd > self.budget_limit_usd:
-            v.append(f"Budget exceeded by ${(self.cost_spent_usd - self.budget_limit_usd) / 1e6:.1f}M")
+            v.append(f"Budget exceeded by {_usd(self.cost_spent_usd - self.budget_limit_usd)}")
         elif (self.budget_limit_usd
               and self.budget_remaining_usd < self.budget_limit_usd * 0.10):
             v.append("Budget margin under 10% — choose cheaper components")
@@ -105,9 +113,9 @@ class ResourceBudget:
         """Real-time resource display for the CLI dashboard."""
         lines = [
             "=== RESOURCE DASHBOARD ===",
-            f"Budget:   ${self.cost_spent_usd / 1e6:7.1f}M spent / "
-            f"${self.budget_limit_usd / 1e6:.1f}M  "
-            f"(remaining ${self.budget_remaining_usd / 1e6:.1f}M)",
+            f"Budget:   {_usd(self.cost_spent_usd):>8} spent / "
+            f"{_usd(self.budget_limit_usd)}  "
+            f"(remaining {_usd(self.budget_remaining_usd)})",
             f"Mass:     {self.mass_used_kg:7.0f} kg / "
             f"{self.mass_limit_kg if self.mass_limit_kg else '?':>7} kg",
             f"Power:    {self.power_used_w:7.0f} W / "

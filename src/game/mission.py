@@ -45,8 +45,11 @@ class Mission:
         self.launch_vehicle: LaunchVehicle | None = None
         self.destination = None  # Planet from planets.py, set during design
 
+        # Budget is set by the destination (see planets.budget_for); until
+        # one is picked the minimum applies.
+        from .planets import budget_for
         self.resources = ResourceBudget(
-            budget_usd=scenario.effective_budget(),
+            budget_usd=budget_for(None),
             mission_months=scenario.mission_months,
         )
         self.players: list = []  # populated by game loop
@@ -107,8 +110,11 @@ class Mission:
         self._update_mass_limit()
 
     def set_destination(self, planet) -> None:
-        """Set the destination planet (from planets.py catalog)."""
+        """Set (or clear, with None) the destination planet. The mission
+        budget follows it: farther worlds get bigger budgets."""
+        from .planets import budget_for
         self.destination = planet
+        self.resources.budget_limit_usd = budget_for(planet)
 
     def set_launch_vehicle(self, lv: LaunchVehicle) -> None:
         self.launch_vehicle = lv
@@ -192,6 +198,27 @@ class Mission:
             errors = []
 
         return errors, warnings
+
+    # Resource fields that hold the *last flight's results*, not the design
+    _RUN_FIELDS = ("time_used_months", "data_generated_gb", "data_downlinked_gb")
+
+    def reset_run_results(self) -> None:
+        """Forget the previous flight (call before launching again)."""
+        for name in self._RUN_FIELDS:
+            setattr(self.resources, name, 0.0)
+
+    def preflight_check(self) -> tuple[list[str], list[str]]:
+        """validate_design() for the design alone, ignoring the last
+        flight's results. After a run that used the whole mission time,
+        validate_design() reports "Mission time limit reached" — true of
+        that flight, but not a reason to block the next launch."""
+        saved = {name: getattr(self.resources, name) for name in self._RUN_FIELDS}
+        self.reset_run_results()
+        try:
+            return self.validate_design()
+        finally:
+            for name, value in saved.items():
+                setattr(self.resources, name, value)
 
     def can_simulate(self) -> bool:
         errors, _ = self.validate_design()

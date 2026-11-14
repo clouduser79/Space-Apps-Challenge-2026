@@ -2,18 +2,18 @@
 Create Spacecraft DefaultSC;
 DefaultSC.DateFormat = TAIModJulian;
 DefaultSC.Epoch = '21545';
-DefaultSC.CoordinateSystem = MoonMJ2000Eq;
+DefaultSC.CoordinateSystem = EarthMJ2000Eq;
 DefaultSC.DisplayStateType = Keplerian;
-DefaultSC.SMA = 1837.4;
+DefaultSC.SMA = 6778.0;
 DefaultSC.ECC = 0.001;
-DefaultSC.INC = 90.0;
+DefaultSC.INC = 51.6;
 DefaultSC.RAAN = 0;
 DefaultSC.AOP = 0;
 DefaultSC.TA = 0;
 
 Create ForceModel DefaultProp_ForceModel;
-DefaultProp_ForceModel.CentralBody = Luna;
-DefaultProp_ForceModel.PrimaryBodies = {Luna};
+DefaultProp_ForceModel.CentralBody = Earth;
+DefaultProp_ForceModel.PrimaryBodies = {Earth};
 
 Create Propagator DefaultProp;
 DefaultProp.FM = DefaultProp_ForceModel;
@@ -29,4 +29,4 @@ rf.WriteHeaders = true;
 rf.Add = {DefaultSC.SMA, DefaultSC.ECC, DefaultSC.RMAG, DefaultSC.VMAG};
 
 BeginMissionSequence;
-Propagate 'Prop orbit' DefaultProp(DefaultSC) {DefaultSC.ElapsedSecs = 6480};
+Propagate 'Prop orbit' DefaultProp(DefaultSC) {DefaultSC.ElapsedSecs = 6664};

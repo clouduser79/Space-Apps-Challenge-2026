@@ -1,9 +1,10 @@
 """2D trajectory visualization widget.
 
 Draws the Sun, Earth, destination planet, outbound and return transfer
-arcs, an orbit path around the destination, and a marker at the outbound
-trajectory's halfway point (potential landing site). Animates a rocket
-through the full mission: Earth -> planet -> orbit -> Earth.
+arcs, an orbit path around the destination, and a marker at the orbit
+intercept point (potential landing site), all over a star field.
+Animates a rocket through the full mission: Earth -> planet -> orbit ->
+Earth, leaving a bright trail along the path already flown.
 """
 
 from __future__ import annotations
@@ -16,6 +17,8 @@ from typing import Callable
 import customtkinter as ctk
 
 from src.game.planets import EARTH, Planet
+from src.ui import theme as T
+from src.ui.widgets import draw_stars
 
 try:
     from PIL import Image, ImageTk
@@ -26,22 +29,27 @@ except ImportError:
 IMAGE_DIR = Path(__file__).resolve().parents[2] / "planetImages"
 ROCKET_IMAGE = Path(__file__).resolve().parents[2] / "rocket.png"
 
-BG = "#242424"
-SUN_COLOR = "#F4D03F"
-TRAJECTORY_COLOR = "#7FB3E8"
-RETURN_COLOR = "#B08CE8"
-ORBIT_COLOR = "#E8A33D"
-LANDING_COLOR = "#7BE382"
-ROCKET_COLOR = "#E8E8E8"
+BG = T.BG
+SUN_COLOR = T.SUN
+TRAJECTORY_COLOR = T.OUTBOUND
+RETURN_COLOR = T.RETURN
+ORBIT_COLOR = T.ORBIT_RING
+LANDING_COLOR = T.LANDING
+ROCKET_COLOR = T.TEXT
+TRAIL_COLOR = "#F1F5FF"
+LABEL_COLOR = T.TEXT_MUTED
 
 
 class TrajectoryCanvas(ctk.CTkFrame):
     """Canvas showing the full Earth -> planet -> orbit -> Earth mission."""
 
-    W = 1150
-    H = 600
+    # Requested size only — the canvas stretches to fill its container
+    W = 640
+    H = 360
 
     def __init__(self, master, **kwargs) -> None:
+        kwargs.setdefault("fg_color", BG)
+        kwargs.setdefault("corner_radius", 0)
         super().__init__(master, **kwargs)
         self.canvas = tk.Canvas(self, width=self.W, height=self.H,
                                 bg=BG, highlightthickness=0)
@@ -50,6 +58,9 @@ class TrajectoryCanvas(ctk.CTkFrame):
         self._anim_after = None
         self._rocket_id = None
         self._rocket_img_id = None
+        self._trail_id = None
+        self._on_done: Callable[[], None] | None = None
+        self.flight_completed = False   # True once a flight reached Earth
         self._path: list[tuple[float, float]] = []
         self._last_size = (0, 0)
         self._img_cache: dict[tuple[str, int], tk.PhotoImage] = {}
@@ -67,7 +78,10 @@ class TrajectoryCanvas(ctk.CTkFrame):
         if not path.exists():
             return None
         img = Image.open(path).convert("RGBA")
-        img = img.resize((diameter_px, diameter_px), Image.LANCZOS)
+        # Height = planet diameter; width follows the art's aspect ratio so
+        # Saturn keeps its rings instead of being squashed into a square
+        width_px = max(1, round(diameter_px * img.width / img.height))
+        img = img.resize((width_px, diameter_px), Image.LANCZOS)
         photo = ImageTk.PhotoImage(img)
         self._img_cache[key] = photo  # keep reference so Tk doesn't GC it
         return photo
@@ -100,7 +114,7 @@ class TrajectoryCanvas(ctk.CTkFrame):
             c.create_image(pos[0], pos[1], image=photo)
         else:
             c.create_oval(pos[0] - r, pos[1] - r, pos[0] + r, pos[1] + r,
-                          fill=planet.color, outline="white")
+                          fill=planet.color, outline="")
             if planet.id == "saturn":
                 c.create_oval(pos[0] - r - 14, pos[1] - (r + 14) // 3,
                               pos[0] + r + 14, pos[1] + (r + 14) // 3,
@@ -108,8 +122,8 @@ class TrajectoryCanvas(ctk.CTkFrame):
                 c.create_arc(pos[0] - r - 14, pos[1] - (r + 14) // 3,
                              pos[0] + r + 14, pos[1] + (r + 14) // 3,
                              start=0, extent=180, outline="#C9B896", width=3)
-        c.create_text(pos[0], pos[1] + r + 18, text=planet.name,
-                      fill="white", font=("Segoe UI", 11, "bold"))
+        c.create_text(pos[0], pos[1] + r + 18, text=planet.name.upper(),
+                      fill=T.TEXT, font=T.canvas_font(11, bold=True))
         return r
 
     def _canvas_w(self) -> float:
@@ -122,9 +136,16 @@ class TrajectoryCanvas(ctk.CTkFrame):
 
     def _on_resize(self, event) -> None:
         size = (event.width, event.height)
-        if size != self._last_size and self._dest is not None:
-            self._last_size = size
+        if size == self._last_size:
+            return
+        self._last_size = size
+        if self._dest is not None:
+            # Geometry changed: any running flight is no longer on the path
+            self._finish_animation()
             self.plot(self._dest)
+        else:
+            self._draw_backdrop()
+            self._draw_empty_state()
 
     # ---------- geometry ----------
     def _earth_pos(self) -> tuple[float, float]:
@@ -217,17 +238,49 @@ class TrajectoryCanvas(ctk.CTkFrame):
         return path
 
     # ---------- drawing ----------
+    def _draw_backdrop(self) -> None:
+        """Star field behind everything else."""
+        self.canvas.delete("all")
+        w, h = int(self._canvas_w()), int(self._canvas_h())
+        draw_stars(self.canvas, w, h, count=max(60, w * h // 4500))
+
+    def _draw_empty_state(self) -> None:
+        self.canvas.create_text(
+            self._canvas_w() / 2, self._canvas_h() / 2,
+            text="Choose a destination in “Orbit & Launch” to plot a trajectory",
+            fill=T.TEXT_DIM, font=T.canvas_font(13))
+
+    def _draw_sun(self) -> None:
+        """Sun with a soft halo built from concentric discs."""
+        c, cy = self.canvas, self._canvas_h() / 2
+        for radius, color in ((58, "#1C1708"), (50, "#3A2E0C"), (43, "#6B5413"),
+                              (35, SUN_COLOR)):
+            c.create_oval(65 - radius, cy - radius, 65 + radius, cy + radius,
+                          fill=color, outline="")
+        c.create_text(65, cy + 72, text="SUN", fill=LABEL_COLOR,
+                      font=T.canvas_font(10, bold=True))
+
+    def show_empty(self) -> None:
+        """No destination yet: star field plus a hint."""
+        self._finish_animation()
+        self.clear()
+        self._dest = None
+        self._draw_backdrop()
+        self._draw_empty_state()
+
+    @property
+    def is_animating(self) -> bool:
+        return self._anim_after is not None
+
     def plot(self, dest: Planet) -> None:
         """Draw the static scene: Sun, Earth, destination, arcs, orbit, marker."""
+        if self.is_animating:
+            self._finish_animation()
         self.clear()
         self._dest = dest
         c = self.canvas
-
-        # Sun
-        c.create_oval(30, self._canvas_h() / 2 - 35, 100, self._canvas_h() / 2 + 35,
-                      fill=SUN_COLOR, outline="")
-        c.create_text(65, self._canvas_h() / 2 + 55, text="Sun", fill="#AAAAAA",
-                      font=("Segoe UI", 11))
+        self._draw_backdrop()
+        self._draw_sun()
 
         p0 = self._earth_pos()
         p2 = self._dest_pos(dest)
@@ -286,29 +339,24 @@ class TrajectoryCanvas(ctk.CTkFrame):
                       fill=LANDING_COLOR, width=1)
         c.create_line(land[0], land[1] - 14, land[0], land[1] + 14,
                       fill=LANDING_COLOR, width=1)
-        c.create_text(land[0], land[1] - 22,
-                      text="Potential landing site (near-side orbit)",
-                      fill=LANDING_COLOR, font=("Segoe UI", 10))
+        c.create_text(land[0], land[1] - 24,
+                      text="Potential landing site",
+                      fill=LANDING_COLOR, font=T.canvas_font(10, bold=True))
 
-        # Legend
-        legend_y = self._canvas_h() - 30
-        c.create_line(30, legend_y, 60, legend_y, fill=TRAJECTORY_COLOR,
-                      width=2, dash=(6, 4))
-        c.create_text(68, legend_y, text="Outbound", fill="#AAAAAA",
-                      font=("Segoe UI", 10), anchor="w")
-        c.create_line(160, legend_y, 190, legend_y, fill=RETURN_COLOR,
-                      width=2, dash=(6, 4))
-        c.create_text(198, legend_y, text="Return", fill="#AAAAAA",
-                      font=("Segoe UI", 10), anchor="w")
-        c.create_line(280, legend_y, 310, legend_y, fill=ORBIT_COLOR,
-                      width=1, dash=(3, 3))
-        c.create_text(318, legend_y, text="Orbit", fill="#AAAAAA",
-                      font=("Segoe UI", 10), anchor="w")
-
-        # Distance label
-        c.create_text((p0[0] + p2[0]) / 2, max(p0[1], p2[1]) + 45,
+        # Legend (bottom-left) and transfer distance (bottom-right)
+        legend_y = self._canvas_h() - 24
+        x = 24
+        for label, color, dash in (("Outbound", TRAJECTORY_COLOR, (6, 4)),
+                                   ("Return", RETURN_COLOR, (6, 4)),
+                                   ("Parking orbit", ORBIT_COLOR, (3, 3))):
+            c.create_line(x, legend_y, x + 28, legend_y, fill=color,
+                          width=2, dash=dash)
+            item = c.create_text(x + 36, legend_y, text=label, fill=LABEL_COLOR,
+                                 font=T.canvas_font(10), anchor="w")
+            x = c.bbox(item)[2] + 22
+        c.create_text(self._canvas_w() - 24, legend_y, anchor="e",
                       text=f"Transfer distance: {dest.distance_label}",
-                      fill="#AAAAAA", font=("Segoe UI", 11))
+                      fill=LABEL_COLOR, font=T.canvas_font(10))
 
         # Precompute full path for animation
         self._path = self._build_path(dest)
@@ -317,17 +365,26 @@ class TrajectoryCanvas(ctk.CTkFrame):
         self.canvas.delete("all")
         self._rocket_id = None
         self._rocket_img_id = None
+        self._trail_id = None
         self._path = []
 
     # ---------- animation ----------
     def animate(self, dest: Planet, duration_ms: int = 9000,
                 on_done: Callable[[], None] | None = None) -> None:
         """Animate a rocket through the full mission profile."""
-        self.stop_animation()
+        self._finish_animation()
+        self.flight_completed = False
         self.plot(dest)
         c = self.canvas
         if not self._path:
+            if on_done:
+                on_done()
             return
+        self._on_done = on_done
+
+        # Bright trail over the part of the path already flown
+        self._trail_id = c.create_line(*self._path[0], *self._path[0],
+                                       fill=TRAIL_COLOR, width=2)
 
         # Rocket: image if available, else small triangle
         self._rocket_id = c.create_polygon(0, 0, 0, 0, 0, 0,
@@ -341,10 +398,14 @@ class TrajectoryCanvas(ctk.CTkFrame):
         def step() -> None:
             i = state["i"]
             if i >= steps:
-                if on_done:
-                    on_done()
+                self.flight_completed = True
+                self._anim_after = None
+                self._finish_animation()
                 return
             x, y = self._path[i]
+            if i >= 1:
+                flown = [v for point in self._path[:i + 1] for v in point]
+                c.coords(self._trail_id, *flown)
             x2, y2 = self._path[min(i + 1, steps)]
             ang = math.degrees(math.atan2(y2 - y, x2 - x))
             photo = self._rocket_photo(ang)
@@ -366,6 +427,18 @@ class TrajectoryCanvas(ctk.CTkFrame):
             self._anim_after = self.after(interval, step)
 
         step()
+
+    def cancel_animation(self) -> None:
+        """Interrupt a running flight (e.g. when leaving the screen)."""
+        self._finish_animation()
+
+    def _finish_animation(self) -> None:
+        """Stop the flight (finished or interrupted) and notify the owner
+        exactly once so it can re-enable its controls."""
+        self.stop_animation()
+        callback, self._on_done = self._on_done, None
+        if callback:
+            callback()
 
     def stop_animation(self) -> None:
         if self._anim_after is not None:
