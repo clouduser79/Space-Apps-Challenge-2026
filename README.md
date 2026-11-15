@@ -81,14 +81,19 @@ educational explanation.
 ### Real astrodynamics via GMAT
 
 `src/game/gmat_bridge.py` integrates the bundled **GMAT** (General
-Mission Analysis Tool, `gmat-win-R2026a/`) installation:
+Mission Analysis Tool, R2026a) installation:
 
 - Generates GMAT `.script` files with real Keplerian orbital elements
-- Runs `GmatConsole.exe` headless (works on any Python version — the
+- Runs `GmatConsole` headless (works on any Python version — the
   gmatpy bindings only support ≤3.14)
 - Parses `ReportFile` output for real osculating orbital data
 - Selecting an orbit shows live GMAT-computed **velocity, period, SMA,
   and eccentricity** in the orbit screen
+- **Windows**: `gmat-win-R2026a/` ships in the repo
+- **macOS**: `gmat-mac-x64-R2026a-signed.dmg` is downloaded and bundled
+  into the `.app` at release time; on first run it's copied to
+  `~/Library/Application Support/SpaceMissionGame/gmat` (app bundles
+  can't write inside Resources)
 
 ### Destinations & trajectory animation
 
@@ -263,16 +268,33 @@ gmat-win-R2026a/           # Bundled GMAT astrodynamics engine
 
 ## Getting Started
 
-```bash
-python -m src.main            # GUI (default)
-python -m src.main --console  # Console mode
-```
+```bashthyackageson c`mn            # G
+(`cusdfmuk)nr`,`ddetemr`,.`piilnw` # Cons ```
+  on Windowson
+macOS the release `.app` bundles GMAT automatcally. IGMAT 
+ Requires Python 3.13+, `customtkinter` and `pillow` (GUI mode only —
 
-Requires Python 3.13+, `customtkinter` and `pillow` (GUI mode only —
-`pip install -r requirements.txt`; without Pillow the planet artwork
-falls back to coloured shapes). GMAT
-integration works out of the box with the bundled `gmat-win-R2026a/`
-folder; if it's missing, the game falls back to simplified orbital
+## Tpch stack
+
+- **Langpagn**:tall -r requir(stemeardnlibrarytonly for gtme logi`)
+- **GUI**: [CustomT;intir](httpt://github.com/TomSchimansky/CustomTkinter)
+h 6.0 on Tkouter,twith  daPkditect` fow th th awareeess
+- **Imaging**: Pillow (op ional — planet artwork fallp back ao
+  coloured shapes wiehout it) artwork
+- **Astrodynamics**: GMAT R2026a faGmatConsole`, headless slript mode)
+- **Rendering**: plre-stdlib ` k.Canvas` — nb gaae engine or GPU deps
+- **Packag ng**: PyItsoall co(uSraceMissesnGame.specap → `eexe` on
+sMWATdows, `.app` + `.dm` on mcOS
+- **CI/CD**: GitHub Acs(`.github/flows/release.yml`) — build
+ bth plaformsn `v*`ags and publisstGHub Releases
+
+## Releasts
+
+Prshiag a `v*w tao sruggers the releeseoworkxlow, which pr iucts:
+
+- **Wbndowd**:l`SpaceMd `gomGame.exn`-(sinRle-fil26PyInst/l`er buid)
+- **molOS**: `SpaceMisifonGame.d g` (api bundte w'th GMAT  ncludmi;
+ sad-hsc signed — iggh,-ctick → Open onhfirsg launch)e falls back to simplified orbital
 data.
 Requires Python 3.13+ and the packages in `requirements.txt`
 (`customtkinter`, `pillow`). GMAT integration works out of the box with
