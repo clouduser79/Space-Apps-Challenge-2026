@@ -4,9 +4,9 @@ DefaultSC.DateFormat = TAIModJulian;
 DefaultSC.Epoch = '21545';
 DefaultSC.CoordinateSystem = EarthMJ2000Eq;
 DefaultSC.DisplayStateType = Keplerian;
-DefaultSC.SMA = 6778.0;
+DefaultSC.SMA = 6978.0;
 DefaultSC.ECC = 0.001;
-DefaultSC.INC = 51.6;
+DefaultSC.INC = 97.8;
 DefaultSC.RAAN = 0;
 DefaultSC.AOP = 0;
 DefaultSC.TA = 0;
@@ -29,4 +29,4 @@ rf.WriteHeaders = true;
 rf.Add = {DefaultSC.SMA, DefaultSC.ECC, DefaultSC.RMAG, DefaultSC.VMAG};
 
 BeginMissionSequence;
-Propagate 'Prop orbit' DefaultProp(DefaultSC) {DefaultSC.ElapsedSecs = 6664};
+Propagate 'Prop orbit' DefaultProp(DefaultSC) {DefaultSC.ElapsedSecs = 6961};

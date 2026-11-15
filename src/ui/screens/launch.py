@@ -1,41 +1,72 @@
-"""Launch screen: run the simulation and present the mission report.
+"""Launch screen: run the simulation and fly it in 3D.
 
 Game logic is the original: validate (blocked unless sandbox), simulate,
-score, generate the report, append to the leaderboard. The simulation
-runs on a worker thread; the UI plays a short phase sequence meanwhile
-and polls for the result from the main thread.
+score, generate the report, append to the leaderboard — with two
+additions for gameplay:
+
+* Event cards. Twice per flight (once in cruise, once in operations) the
+  flight pauses and the player makes a tactical choice. The simulation is
+  run once up front with a random seed (to know whether the launch
+  succeeds, so the 3D rocket can explode on cue), then again at the end
+  with the *same* seed plus the chosen effects — so the launch outcome is
+  identical and only the choices change what follows.
+* Progression. Milestone toasts fire as the flight progresses; at the end
+  the player earns XP, possibly a rank-up and a medal (src/game/profile.py).
+
+A blocked design never flies, so its problems are listed right here.
 """
 
 from __future__ import annotations
 
+import random
 import threading
+import time
 
 import customtkinter as ctk
 
+from src.game.flight_events import EventCard, merge_effects, pick_events
+from src.game.profile import award_flight, medal_for
 from src.game.save_load import save_result
 from src.game.scoring import ScoreEngine
-from src.game.simulation import EVENT_DECK
 from src.ui import theme as T
 from src.ui.screens.base import Screen
+from src.ui.screens.launch_viewport import (FLIGHT_PHASES, FLIGHT_S, LOOPS, MissionViewport,
+                                            phase_at, phase_span)
 from src.ui.telemetry import readiness
-from src.ui.widgets import (Badge, Card, Meter, ScoreRing, ScrollFrame, StatTile,
-                            StatusRow, eyebrow, ghost_button, glossary_text,
-                            primary_button, text)
+from src.ui.widgets import (Badge, Card, Chip, ScrollFrame, SelectableCard, StatusRow,
+                            eyebrow, ghost_button, glossary_text, primary_button, text)
 
-PHASES = ["Launch", "Cruise", "Operations", "Scoring"]
-PHASE_MS = 600
-EVENT_INFO = {ev.name: ev.description for ev in EVENT_DECK}
-WEIGHTS = {"science": ScoreEngine.SCIENCE_WEIGHT,
-           "objectives": ScoreEngine.OBJECTIVE_WEIGHT,
-           "efficiency": ScoreEngine.EFFICIENCY_WEIGHT,
-           "reliability": ScoreEngine.RELIABILITY_WEIGHT,
-           "innovation": ScoreEngine.INNOVATION_WEIGHT}
+# One shared timeline (phase names and lengths live with the 3D viewport)
+PHASES = [name for name, _ in FLIGHT_PHASES]
+RESULTS_DELAY_MS = 1600  # let the player see the landing before moving on
+
+
+def _at(index: int, share: float) -> float:
+    """Overall flight progress at `share` of the way through phase `index`."""
+    start, width = phase_span(index)
+    return start + share * width
+
+
+EVENT_AT = (_at(1, 0.5), _at(2, 0.5))   # mid-cruise, and mid-way through the orbits
+FAILURE_AT = _at(0, 0.5)                # matches the 3D explosion
+
+# (flight progress, message, tone, icon, only if the launch succeeded)
+MILESTONES = [
+    (0.005, "Lift-off!", "accent", "🚀", False),
+    (_at(0, 0.6), "Booster separation — clean!", "accent", "✓", True),
+    (_at(2, 0.0), "Orbit insertion — you made it!", "success", "🪐", True),
+    (_at(2, 0.34), "Science data streaming home", "success", "📡", True),
+    (_at(2, 0.67), f"Final lap ({LOOPS} of {LOOPS})", "success", "↻", True),
+    (_at(3, 0.02), "Leaving orbit — heading home", "accent", "↩", True),
+    (0.995, "Touchdown — welcome home!", "success", "🌍", True),
+]
 
 
 class LaunchScreen(Screen):
     key = "sim"
     title = "Launch"
-    subtitle = "Commit the design, light the engines and see how your mission performs."
+    subtitle = ("Commit the design, light the engines and watch the mission fly. "
+                "Your results come next.")
     show_telemetry = False
 
     def __init__(self, master, app) -> None:
@@ -48,10 +79,16 @@ class LaunchScreen(Screen):
         self.body.grid_columnconfigure(0, weight=1)
         self._running = False
         self._has_results = False   # a finished flight is shown below
+        self._flight: dict = {}
+        self._prompt = None
         self._build_control()
-        self.results = ctk.CTkFrame(self.body, fg_color="transparent")
-        self.results.grid(sticky="ew", padx=(0, T.PAD_SM))
-        self.results.grid_columnconfigure(0, weight=1)
+        # Central 3D viewport: destination planet + Tharun's Rocket + minimap
+        self.viewport = MissionViewport(self.body)
+        self.viewport.grid(sticky="ew", padx=(0, T.PAD_SM), pady=(0, T.PAD))
+        # Only used when the design is blocked (that flight never happens)
+        self.notice = ctk.CTkFrame(self.body, fg_color="transparent")
+        self.notice.grid(sticky="ew", padx=(0, T.PAD_SM))
+        self.notice.grid_columnconfigure(0, weight=1)
 
     # ------------------------------------------------------------------
     # Launch control panel
@@ -77,6 +114,16 @@ class LaunchScreen(Screen):
         self.launch_btn = primary_button(right, "🚀  LAUNCH SIMULATION", self._launch,
                                          width=260, height=54, font=T.font(15, "bold"))
         self.launch_btn.pack()
+        row = ctk.CTkFrame(right, fg_color="transparent")
+        row.pack(fill="x", pady=(8, 0))
+        row.grid_columnconfigure((0, 1), weight=1, uniform="b")
+        # Replays the full round trip on the 2D transfer map
+        self.preview_btn = ghost_button(row, "▶  Preview route", self.viewport_preview,
+                                        height=34, font=T.font(12, "bold"))
+        self.preview_btn.grid(row=0, column=0, columnspan=2, sticky="ew")
+        self.results_btn = ghost_button(row, "View results  →",
+                                        lambda: self.app.show_screen("results"),
+                                        height=34, font=T.font(12, "bold"))
 
         # Phase tracker, shown while the simulation runs
         self.tracker = ctk.CTkFrame(card, fg_color="transparent")
@@ -94,10 +141,31 @@ class LaunchScreen(Screen):
                             pady=(8, 0))
         self.tracker.grid_remove()
 
+    def on_show(self) -> None:
+        super().on_show()
+        self.viewport.start()
+
+    def on_hide(self) -> None:
+        self.viewport.stop()        # no 3D rendering while off-screen
+
+    def viewport_preview(self) -> None:
+        if not self._running:
+            self.viewport.preview_route()
+
     def refresh(self) -> None:
         if self._running:
             return
         m = self.mission
+        self.viewport.set_mission(m)
+        if not self._has_results:
+            self.viewport.abort()   # back to standby on the launch pad
+        # After a flight, offer a way back to its results next to the preview
+        if self._has_results and self.app.last_flight is not None:
+            self.preview_btn.grid(row=0, column=0, columnspan=1, sticky="ew", padx=(0, 4))
+            self.results_btn.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        else:
+            self.results_btn.grid_remove()
+            self.preview_btn.grid(row=0, column=0, columnspan=2, sticky="ew", padx=0)
         label, tone = readiness(m)
         self.ready_badge.set(label, tone)
         sandbox = m.scenario.sandbox_mode
@@ -123,18 +191,40 @@ class LaunchScreen(Screen):
             return
         self._running = True
         self.launch_btn.configure(state="disabled", text="Mission in progress…")
+        self.preview_btn.configure(state="disabled")
+        self.results_btn.configure(state="disabled")
         self.app.set_navigation_enabled(False)
-        for child in self.results.winfo_children():
+        for child in self.notice.winfo_children():
             child.destroy()
         self.tracker.grid()
         self.phase_bar.set(0)
 
         box: dict = {}
         threading.Thread(target=self._simulate, args=(box,), daemon=True).start()
-        self._advance_phase(0, box)
+        self._await_result(box)
+
+    def _await_result(self, box: dict) -> None:
+        """Wait (milliseconds) for the pre-flight run: blocked/crashed ends
+        here; otherwise we know the launch outcome and can start flying."""
+        if not self.winfo_exists():
+            return
+        if "out" in box:
+            self._finish(*box["out"])
+            return
+        if "pre" not in box:
+            self.after(20, self._await_result, box)
+            return
+        launch_ok, seed = box["pre"]
+        cards = pick_events() if launch_ok else []
+        self._flight = dict(seed=seed, launch_ok=launch_ok, elapsed=0.0,
+                            last=time.monotonic(), paused=False, index=-1,
+                            events=list(zip(EVENT_AT, cards)), effects=[], decisions=[],
+                            milestones=list(MILESTONES), failure_told=False)
+        self.viewport.play(FLIGHT_S, launch_ok)
+        self._flight_tick()
 
     def _simulate(self, box: dict) -> None:
-        """Worker thread. Touches only the game model, never Tk widgets."""
+        """Worker thread (pre-flight). Touches only the game model."""
         m = self.mission
         # Each launch is a fresh run: clear the previous run's elapsed time
         # and data volumes, otherwise "time limit reached" from the last
@@ -145,7 +235,17 @@ class LaunchScreen(Screen):
             if errors and not m.scenario.sandbox_mode:
                 box["out"] = ("blocked", errors, None, -1, "")
                 return
-            result = m.simulate()
+            seed = random.randrange(1 << 30)
+            box["pre"] = (m.simulate(seed=seed).launch_success, seed)
+        except Exception as exc:
+            box["out"] = ("crashed", [str(exc)], None, 0, "")
+
+    def _final_run(self, box: dict, seed: int, effects: dict) -> None:
+        """Worker thread (post-flight): same seed + the player's choices."""
+        m = self.mission
+        m.reset_run_results()
+        try:
+            result = m.simulate(seed=seed, modifiers=effects)
             engine = ScoreEngine()
             score = engine.score(result)
             report = engine.generate_report(result)
@@ -157,45 +257,124 @@ class LaunchScreen(Screen):
         except Exception as exc:
             box["out"] = ("crashed", [str(exc)], None, 0, "")
 
-    def _advance_phase(self, index: int, box: dict) -> None:
+    def _flight_tick(self) -> None:
+        """Pausable flight clock: phases, milestones, event cards, finish."""
         if not self.winfo_exists():
             return
-        blocked = box.get("out", ("",))[0] in ("blocked", "crashed")
-        if index < len(PHASES) and not blocked:
+        f = self._flight
+        now = time.monotonic()
+        if not f["paused"]:
+            f["elapsed"] += now - f["last"]
+        f["last"] = now
+        progress = min(1.0, f["elapsed"] / FLIGHT_S)
+
+        index = phase_at(progress)[0]
+        if index != f["index"]:
+            f["index"] = index
             for i, label in enumerate(self.phase_labels):
                 if i < index:
                     label.configure(text=f"✓  {PHASES[i]}", text_color=T.SUCCESS)
                 elif i == index:
                     label.configure(text=f"●  {PHASES[i]}", text_color=T.ACCENT)
-            self.phase_bar.set((index + 1) / len(PHASES))
-            self.after(PHASE_MS, self._advance_phase, index + 1, box)
+        self.phase_bar.set(progress)
+
+        while f["milestones"] and f["milestones"][0][0] <= progress:
+            _at, message, tone, icon, needs_ok = f["milestones"].pop(0)
+            if f["launch_ok"] or not needs_ok:
+                self.app.toast(message, tone, icon, 1700)
+        if not f["launch_ok"] and not f["failure_told"] and progress >= FAILURE_AT:
+            f["failure_told"] = True
+            self.app.toast("Launch failure — signal lost!", "danger", "💥", 2400)
+
+        if not f["paused"] and f["events"] and f["events"][0][0] <= progress:
+            _at, card = f["events"].pop(0)
+            self._show_event(card)
+
+        if progress >= 1.0 and not f["paused"]:
+            box: dict = {}
+            threading.Thread(target=self._final_run,
+                             args=(box, f["seed"], merge_effects(f["effects"])),
+                             daemon=True).start()
+            self._await_final(box)
             return
-        if "out" not in box:                    # simulation still running
-            self.after(100, self._advance_phase, index, box)
+        self.after(40, self._flight_tick)
+
+    def _await_final(self, box: dict) -> None:
+        if not self.winfo_exists():
+            return
+        if "out" not in box:
+            self.after(30, self._await_final, box)
             return
         self._finish(*box["out"])
 
+    # ------------------------------------------------------------------
+    # Event cards
+    # ------------------------------------------------------------------
+    def _show_event(self, card: EventCard) -> None:
+        f = self._flight
+        f["paused"] = True
+        self.viewport.pause()
+        self._prompt = EventPrompt(self.body, card, self._choose)
+        self._prompt.place(in_=self.viewport, relx=0.5, rely=0.5, anchor="center")
+        self._prompt.lift()
+
+    def _choose(self, card: EventCard, choice) -> None:
+        f = self._flight
+        f["effects"].append(choice.effects)
+        f["decisions"].append((card.icon, card.title, choice.label, choice.chips))
+        if self._prompt is not None:
+            self._prompt.destroy()
+            self._prompt = None
+        self.viewport.resume()
+        f["paused"] = False
+        f["last"] = time.monotonic()
+        self.app.toast(f"Decision locked in: {choice.label}", "accent", "⚡", 1600)
+
     def _finish(self, status, notes, result, score, report) -> None:
-        self._running = False
-        self.app.set_navigation_enabled(True)
         self.tracker.grid_remove()
         for label, phase in zip(self.phase_labels, PHASES):
             label.configure(text=f"○  {phase}", text_color=T.TEXT_DIM)
-        self.launch_btn.configure(state="normal", text="🚀  LAUNCH AGAIN")
-        self.app.on_design_changed()       # time meter etc. reflect the run
-        self._has_results = status == "done"
-        self.refresh()                     # header reflects the new state
-        if status == "done":
-            self._show_results(result, score, notes, report)
-        else:
+        if status != "done":                # blocked / crashed: it never flew
+            self._running = False
+            self.viewport.abort()
+            self._unlock()
             self._show_blocked(status, notes)
-        self.body.scroll_to_top()
+            self.app.on_design_changed()
+            return
+        # The flight is over: keep the final orbit (or debris) on screen for
+        # a moment, then move on to the Results step.
+        self.viewport.finish(result.launch_success)
+        medal = medal_for(result, score, self.mission.scenario)
+        award = award_flight(self.app.profile, result, score, medal, self.mission)
+        self.app.on_profile_changed()           # header XP balance, sidebar rank
+        self.app.last_flight = dict(result=result, score=score, tips=notes, report=report,
+                                    medal=medal, award=award,
+                                    decisions=self._flight["decisions"])
+        self._has_results = True
+        self.launch_btn.configure(text="Opening results…")
+        self.after(RESULTS_DELAY_MS, self._to_results)
+
+    def _to_results(self) -> None:
+        if not self.winfo_exists():
+            return
+        self._running = False
+        self._unlock()
+        self.app.on_design_changed()       # time meter, header, badge
+        self.app.show_screen("results")
+
+    def _unlock(self) -> None:
+        self.launch_btn.configure(state="normal",
+                                  text="🚀  LAUNCH AGAIN" if self._has_results
+                                  else "🚀  LAUNCH SIMULATION")
+        self.preview_btn.configure(state="normal")
+        self.results_btn.configure(state="normal")
+        self.app.set_navigation_enabled(True)
 
     # ------------------------------------------------------------------
     # Results
     # ------------------------------------------------------------------
     def _show_blocked(self, status: str, problems: list[str]) -> None:
-        card = Card(self.results, border_color=T.DANGER)
+        card = Card(self.notice, border_color=T.DANGER)
         card.grid(sticky="ew", pady=(0, T.PAD))
         card.grid_columnconfigure(0, weight=1)
         title = ("Simulation blocked" if status == "blocked" else "Simulation crashed")
@@ -213,139 +392,40 @@ class LaunchScreen(Screen):
         ghost_button(card, "Open Mission Review", lambda: self.app.show_screen("dash"),
                      width=220).grid(sticky="w", padx=T.PAD_LG, pady=T.PAD_LG)
 
-    def _show_results(self, r, score: float, tips: list[str], report: str) -> None:
-        parent = self.results
 
-        # Outcome banner: score ring + headline + key numbers
-        top = Card(parent)
-        top.grid(sticky="ew", pady=(0, T.PAD))
-        top.grid_columnconfigure(1, weight=1)
-        ring = ScoreRing(top, size=176, bg=T.CARD)
-        ring.grid(row=0, column=0, rowspan=2, padx=T.PAD_LG, pady=T.PAD_LG)
-        ring.show(score)
+class EventPrompt(Card):
+    """Modal event card shown over the 3D view while the flight is paused:
+    what happened, and two choices with their trade-offs spelled out."""
 
-        if not r.launch_success:
-            outcome, tone, headline = "Launch failure", "danger", "The rocket didn't make it."
-        elif r.success:
-            outcome, tone, headline = "Success", "success", "Mission accomplished."
-        else:
-            outcome, tone, headline = "Partial success", "warning", "The mission flew — with gaps."
-        head = ctk.CTkFrame(top, fg_color="transparent")
-        head.grid(row=0, column=1, sticky="sew", padx=(0, T.PAD_LG), pady=(T.PAD_LG, 0))
-        Badge(head, outcome, tone).pack(anchor="w")
-        text(head, headline, T.H1).pack(anchor="w", pady=(6, 0))
-        if score >= 90:
-            text(head, "★  SUCCESS!  Outstanding mission design, Commander.", T.H3,
-                 T.SUCCESS).pack(anchor="w", pady=(4, 0))
-        elif r.failure_reason:
-            text(head, r.failure_reason, T.BODY, T.TEXT_MUTED).pack(anchor="w", pady=(4, 0))
+    WIDTH = 600
 
-        tiles = ctk.CTkFrame(top, fg_color="transparent")
-        tiles.grid(row=1, column=1, sticky="new", padx=(0, T.PAD_LG), pady=(T.PAD, T.PAD_LG))
-        tiles.grid_columnconfigure(tuple(range(5)), weight=1, uniform="t")
-        backlog_tone = "danger" if r.data_backlog_gb > 1000 else (
-            "warning" if r.data_backlog_gb > 500 else "neutral")
-        for i, (caption, value, t) in enumerate([
-                ("Science", f"{r.science_return:.0f}", "violet"),
-                ("Months operated", f"{r.months_operated:.0f}", "neutral"),
-                ("Data generated", f"{r.data_generated_gb:,.0f} GB", "neutral"),
-                ("Downlinked", f"{r.data_downlinked_gb:,.0f} GB", "neutral"),
-                ("Backlog", f"{r.data_backlog_gb:,.0f} GB", backlog_tone)]):
-            StatTile(tiles, caption, value, t).grid(
-                row=0, column=i, sticky="ew", padx=(0 if i == 0 else 6, 0))
+    def __init__(self, master, card: EventCard, on_choose) -> None:
+        super().__init__(master, fg_color=T.SURFACE, border_width=2,
+                         border_color=T.WARNING, width=self.WIDTH)
+        self.grid_columnconfigure((0, 1), weight=1, uniform="choice")
+        phase = "Cruise" if card.phase == "cruise" else "Operations"
+        eyebrow(self, f"⚠  Incoming event · {phase} · flight paused", T.WARNING).grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=T.PAD_LG, pady=(T.PAD_LG, 4))
+        head = ctk.CTkFrame(self, fg_color="transparent")
+        head.grid(row=1, column=0, columnspan=2, sticky="ew", padx=T.PAD_LG)
+        text(head, card.icon, (30, "normal")).pack(side="left", padx=(0, 10))
+        text(head, card.title, T.H1).pack(side="left")
+        glossary_text(self, card.story, T.BODY, T.TEXT_MUTED).grid(
+            row=2, column=0, columnspan=2, sticky="ew", padx=T.PAD_LG, pady=(6, T.PAD))
 
-        # Breakdown + objectives side by side
-        mid = ctk.CTkFrame(parent, fg_color="transparent")
-        mid.grid(sticky="ew", pady=(0, T.PAD))
-        mid.grid_columnconfigure((0, 1), weight=1, uniform="m")
-        self._breakdown(mid, r).grid(row=0, column=0, sticky="nsew", padx=(0, T.PAD_SM))
-        self._objectives(mid, r).grid(row=0, column=1, sticky="nsew", padx=(T.PAD_SM, 0))
-
-        # Engineering feedback
-        card = Card(parent)
-        card.grid(sticky="ew", pady=(0, T.PAD))
-        card.grid_columnconfigure(0, weight=1)
-        eyebrow(card, "Engineering feedback", T.VIOLET).grid(
-            sticky="w", padx=T.PAD_LG, pady=(T.PAD, 8))
-        for tip in tips:
-            row = ctk.CTkFrame(card, fg_color=T.VIOLET_BG, corner_radius=8)
-            row.grid(sticky="ew", padx=T.PAD_LG, pady=(0, 8))
-            row.grid_columnconfigure(1, weight=1)
-            text(row, "→", (14, "bold"), T.VIOLET).grid(row=0, column=0, padx=(12, 8),
-                                                        pady=10, sticky="n")
-            glossary_text(row, tip, T.BODY).grid(row=0, column=1, sticky="ew",
-                                                 padx=(0, 12), pady=10)
-        ctk.CTkFrame(card, fg_color="transparent", height=T.PAD_SM).grid()
-
-        # Full text report, for the curious (and for copying)
-        log = Card(parent)
-        log.grid(sticky="ew", pady=(0, T.PAD))
-        log.grid_columnconfigure(0, weight=1)
-        eyebrow(log, "Mission log", T.TEXT_DIM).grid(sticky="w", padx=T.PAD_LG,
-                                                     pady=(T.PAD, 8))
-        box = ctk.CTkTextbox(log, height=220, font=T.font(12, mono=True),
-                             fg_color=T.BG, text_color=T.TEXT_MUTED, corner_radius=8,
-                             border_width=0, wrap="word")
-        box.grid(sticky="ew", padx=T.PAD_LG, pady=(0, T.PAD_LG))
-        box.insert("end", report + f"\n\nFINAL SCORE: {score} / 100\n")
-        box.configure(state="disabled")
-
-        actions = ctk.CTkFrame(parent, fg_color="transparent")
-        actions.grid(sticky="ew", pady=(0, T.PAD_LG))
-        primary_button(actions, "Tweak the design", lambda: self.app.show_screen("bus"),
-                       width=200).pack(side="left")
-        ghost_button(actions, "Start a new mission", self.app.restart,
-                     width=200).pack(side="left", padx=T.PAD_SM)
-
-    def _breakdown(self, parent, r) -> Card:
-        card = Card(parent)
-        card.grid_columnconfigure(0, weight=1)
-        eyebrow(card, "Score breakdown").grid(sticky="w", padx=T.PAD_LG, pady=(T.PAD, 10))
-        if not r.score_breakdown:
-            text(card, "Launch failed — only participation credit was awarded.",
-                 T.SMALL, T.TEXT_MUTED).grid(sticky="w", padx=T.PAD_LG, pady=(0, T.PAD))
-            return card
-        for key, value in r.score_breakdown.items():
-            meter = Meter(card, f"{key.capitalize()}  ·  {WEIGHTS.get(key, 0):.0%} weight")
-            meter.grid(sticky="ew", padx=T.PAD_LG, pady=(0, 12))
-            meter.set(value / 100, f"{value:.0f}", T.score_tone(value))
-        return card
-
-    def _objectives(self, parent, r) -> Card:
-        card = Card(parent)
-        card.grid_columnconfigure(0, weight=1)
-        eyebrow(card, "Objectives").grid(sticky="w", padx=T.PAD_LG, pady=(T.PAD, 8))
-        rows = ctk.CTkFrame(card, fg_color="transparent")
-        rows.grid(sticky="ew", padx=T.PAD_LG)
-        rows.grid_columnconfigure(0, weight=1)
-        if not r.objectives_met and not r.objectives_failed:
-            text(rows, "No scored objectives in this scenario.", T.SMALL,
-                 T.TEXT_DIM).grid(sticky="w")
-        for obj in r.objectives_met:
-            row = StatusRow(rows, obj.replace("_", " ").capitalize())
-            row.set("success", "pass")
-            row.grid(sticky="ew", pady=1)
-        for obj in r.objectives_failed:
-            row = StatusRow(rows, obj.replace("_", " ").capitalize())
-            row.set("danger", "fail")
-            row.grid(sticky="ew", pady=1)
-
-        eyebrow(card, "Anomalies", T.WARNING).grid(sticky="w", padx=T.PAD_LG,
-                                                   pady=(T.PAD, 8))
-        events = ctk.CTkFrame(card, fg_color="transparent")
-        events.grid(sticky="ew", padx=T.PAD_LG, pady=(0, T.PAD))
-        events.grid_columnconfigure(0, weight=1)
-        if not r.events_triggered:
-            row = StatusRow(events, "None — a clean mission.")
-            row.set("success")
-            row.grid(sticky="ew")
-        for name in r.events_triggered:
-            good = name == "Bonus science window"
-            row = StatusRow(events, name)
-            row.set("success" if good else "warning")
-            row.grid(sticky="ew", pady=(2, 0))
-            info = EVENT_INFO.get(name)
-            if info:
-                glossary_text(events, info, (11, "normal"), T.TEXT_DIM).grid(
-                    sticky="ew", padx=(22, 0))
-        return card
+        for i, choice in enumerate(card.choices):
+            option = SelectableCard(self, command=lambda c=choice: on_choose(card, c))
+            option.grid(row=3, column=i, sticky="nsew",
+                        padx=(T.PAD_LG if i == 0 else 6, 6 if i == 0 else T.PAD_LG))
+            option.grid_columnconfigure(0, weight=1)
+            text(option, f"{i + 1}", (11, "bold"), T.ACCENT).grid(sticky="w", padx=T.PAD,
+                                                                  pady=(12, 0))
+            glossary_text(option, choice.label, T.H3).grid(sticky="ew", padx=T.PAD)
+            chips = ctk.CTkFrame(option, fg_color="transparent")
+            chips.grid(sticky="w", padx=T.PAD, pady=(8, 14))
+            for chip_text, tone in choice.chips:
+                Chip(chips, chip_text, tone).pack(anchor="w", pady=2)
+            option.finalize()
+        text(self, "Choose wisely — your call changes the mission's score.", T.SMALL,
+             T.TEXT_DIM).grid(row=4, column=0, columnspan=2, sticky="w",
+                              padx=T.PAD_LG, pady=(T.PAD, T.PAD_LG))

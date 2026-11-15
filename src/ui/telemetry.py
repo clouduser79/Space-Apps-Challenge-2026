@@ -13,8 +13,10 @@ from dataclasses import dataclass
 import customtkinter as ctk
 
 from src.game.mission import Mission
+from src.game.profile import rank_for
 from src.ui import theme as T
-from src.ui.widgets import Badge, Card, Meter, StatTile, StatusRow, eyebrow
+from src.ui.widgets import (Badge, Card, Meter, ScrollFrame, StatTile, StatusRow,
+                            eyebrow, text)
 
 
 @dataclass
@@ -142,9 +144,68 @@ def readiness(mission: Mission) -> tuple[str, str]:
     return "Flight ready", "success"
 
 
+GRADE_TONES = {"A": "success", "B": "accent", "C": "warning", "D": "warning", "F": "danger"}
+
+
+def design_grade(mission: Mission) -> tuple[str, int, str]:
+    """A-F health grade for the current design: (letter, score 0-100, tip).
+
+    Starts at 100 and loses points for anything that would hurt the flight:
+    missing systems (-15 each), no payload (-15), other blocking issues
+    (-10 each), warnings (-5), tight budget / mass / power margins (-5 each),
+    data piling up faster than it can be sent home (-5), and unpicked
+    orbit / rocket / destination (-8 / -8 / -5). The tip names the most
+    important thing to fix next.
+    """
+    sc, r = mission.spacecraft, mission.resources
+    errors, warnings = mission.preflight_check()
+    score, tips = 100.0, []
+
+    for missing in sc.missing_essentials():
+        score -= 15
+        tips.append(f"Add {missing}")
+    if not sc.payload:
+        score -= 15
+        tips.append("Add a science instrument")
+    for e in errors:
+        if e.startswith("Missing essential"):
+            continue                                   # counted above
+        if e in ("No orbit selected", "No launch vehicle selected"):
+            score -= 8
+            tips.append(e.replace("No ", "Pick a ").replace(" selected", ""))
+        else:
+            score -= 10
+            tips.append(e)
+    for w in warnings:
+        score -= 5
+        tips.append(w)
+    if not errors:
+        if r.budget_limit_usd and r.cost_spent_usd / r.budget_limit_usd > 0.75:
+            score -= 5
+            tips.append("Budget is getting tight")
+        if r.mass_limit_kg and r.mass_used_kg / r.mass_limit_kg > 0.75:
+            score -= 5
+            tips.append("Close to the rocket's lift limit")
+        if sc.power_generated_w and sc.power_consumed_w / sc.power_generated_w > 0.7:
+            score -= 5
+            tips.append("Power margin is thin")
+    if sc.comms_mbps and sc.data_rate_mbps > sc.comms_mbps:
+        score -= 5
+        tips.append("Instruments make data faster than you can send it home")
+    if mission.destination is None:
+        score -= 5
+        tips.append("Pick a destination")
+
+    score = int(max(0, min(100, round(score))))
+    letter = ("A" if score >= 90 else "B" if score >= 80 else "C" if score >= 70
+              else "D" if score >= 60 else "F")
+    return letter, score, tips[0] if tips else "Looking great — ready for launch!"
+
+
 class TelemetryPanel(Card):
     """Sidebar that stays visible while designing, so every Add/Remove
-    click shows its consequence immediately."""
+    click shows its consequence immediately: the A-F design grade, the
+    player's XP rank, resource meters and a systems checklist."""
 
     WIDTH = 300
     _METERS = [("budget", "Budget"), ("mass", "Launch mass"),
@@ -155,16 +216,55 @@ class TelemetryPanel(Card):
         self.app = app
         self.grid_propagate(False)
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        # Scrollable so the panel never clips on short windows
+        body = ScrollFrame(self, width=self.WIDTH - 24)
+        body.grid(row=0, column=0, sticky="nsew", padx=(4, 2), pady=4)
+        body.grid_columnconfigure(0, weight=1)
+        self.body = body
+        self._grade = None
 
-        head = self._row(pady=(T.PAD, 0))
+        head = self._row(pady=(T.PAD - 4, 0))
         head.grid_columnconfigure(0, weight=1)
         eyebrow(head, "Live telemetry").grid(row=0, column=0, sticky="w")
         self.status = Badge(head, "—")
         self.status.grid(row=0, column=1, sticky="e")
 
+        # --- design grade + XP rank -------------------------------------------
+        hero = self._row(pady=(12, 0))
+        hero.grid_columnconfigure(1, weight=1)
+        self.grade_tile = ctk.CTkFrame(hero, width=78, height=86, corner_radius=12,
+                                       fg_color=T.RAISED, border_width=2,
+                                       border_color=T.BORDER_STRONG)
+        self.grade_tile.grid(row=0, column=0, rowspan=2, sticky="nw")
+        self.grade_tile.grid_propagate(False)
+        self.grade_tile.grid_columnconfigure(0, weight=1)
+        text(self.grade_tile, "GRADE", (9, "bold"), T.TEXT_DIM, anchor="center").grid(
+            row=0, column=0, pady=(6, 0))
+        self.grade_letter = ctk.CTkLabel(self.grade_tile, text="–", font=T.font(36, "bold"),
+                                         text_color=T.TEXT)
+        self.grade_letter.grid(row=1, column=0, pady=(0, 0))
+        self.grade_score = text(self.grade_tile, "", (9, "bold"), T.TEXT_DIM, anchor="center")
+        self.grade_score.grid(row=2, column=0, pady=(0, 6))
+
+        rank = ctk.CTkFrame(hero, fg_color="transparent")
+        rank.grid(row=0, column=1, sticky="new", padx=(12, 0))
+        rank.grid_columnconfigure(0, weight=1)
+        text(rank, "PILOT RANK", (9, "bold"), T.TEXT_DIM).grid(sticky="w")
+        self.rank_badge = Badge(rank, "Cadet", "violet")
+        self.rank_badge.grid(sticky="w", pady=(4, 6))
+        self.xp_bar = ctk.CTkProgressBar(rank, height=8, corner_radius=4, fg_color=T.RAISED,
+                                         progress_color=T.VIOLET)
+        self.xp_bar.grid(sticky="ew")
+        self.xp_text = text(rank, "", (10, "bold"), T.TEXT_MUTED)
+        self.xp_text.grid(sticky="w", pady=(4, 0))
+
+        self.grade_tip = text(self.body, "", (11, "normal"), T.TEXT_MUTED, wraplength=self.WIDTH - 56)
+        self.grade_tip.grid(sticky="ew", padx=T.PAD, pady=(10, 0))
+
         self.meters: dict[str, Meter] = {}
         for key, caption in self._METERS:
-            meter = Meter(self, caption)
+            meter = Meter(self.body, caption)
             meter.grid(sticky="ew", padx=T.PAD, pady=(14, 0))
             self.meters[key] = meter
 
@@ -175,14 +275,14 @@ class TelemetryPanel(Card):
         self.parts = StatTile(tiles, "Components")
         self.parts.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
-        eyebrow(self, "Systems check", T.TEXT_DIM).grid(
+        eyebrow(self.body, "Systems check", T.TEXT_DIM).grid(
             sticky="w", padx=T.PAD, pady=(T.PAD_LG - 4, 6))
         self.checklist = self._row(pady=(0, T.PAD))
         self.checklist.grid_columnconfigure(0, weight=1)
         self._rows: list[StatusRow] = []
 
     def _row(self, pady) -> ctk.CTkFrame:
-        frame = ctk.CTkFrame(self, fg_color="transparent")
+        frame = ctk.CTkFrame(self.body, fg_color="transparent")
         frame.grid(sticky="ew", padx=T.PAD, pady=pady)
         return frame
 
@@ -191,6 +291,8 @@ class TelemetryPanel(Card):
         if mission is None:
             return
         self.status.set(*readiness(mission))
+        self._refresh_grade(mission)
+        self.refresh_rank()
 
         readings = resource_readings(mission)
         for key, meter in self.meters.items():
@@ -208,3 +310,32 @@ class TelemetryPanel(Card):
             self._rows.append(status_row)
         for status_row, (label, tone, detail) in zip(self._rows, rows):
             status_row.set(tone, detail, label=label)
+
+    def _refresh_grade(self, mission: Mission) -> None:
+        letter, score, tip = design_grade(mission)
+        colour = T.TONES[GRADE_TONES[letter]][0]
+        self.grade_letter.configure(text=letter, text_color=colour)
+        self.grade_score.configure(text=f"{score}/100")
+        self.grade_tile.configure(border_color=colour)
+        self.grade_tip.configure(text=("Next: " if letter != "A" else "") + tip)
+        previous, self._grade = self._grade, letter
+        if previous is not None and letter != previous:
+            self._flash(colour, better=letter < previous)
+
+    def _flash(self, colour: str, better: bool) -> None:
+        """Punchy feedback: the tile lights up when the grade changes."""
+        bg = T.SUCCESS_BG if better else T.DANGER_BG
+        self.grade_tile.configure(fg_color=bg)
+        self.after(380, lambda: self.grade_tile.winfo_exists()
+                   and self.grade_tile.configure(fg_color=T.RAISED))
+
+    def refresh_rank(self) -> None:
+        profile = self.app.profile
+        info = rank_for(profile.xp)
+        self.rank_badge.set(f"LV {info['level']} · {info['name']}", "violet")
+        self.xp_bar.set(info["progress"])
+        if info["next_floor"] is None:
+            line = f"{profile.xp:,} XP · max rank!"
+        else:
+            line = f"{profile.xp:,} / {info['next_floor']:,} XP → {info['next_name']}"
+        self.xp_text.configure(text=f"{line}\n⭐ {profile.balance:,} XP to spend in the shop")

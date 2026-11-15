@@ -225,10 +225,12 @@ class Mission:
         return len(errors) == 0
 
     # --- simulation ---
-    def simulate(self, seed: int | None = None) -> "MissionResult":
-        """Run the mission simulation and return results."""
+    def simulate(self, seed: int | None = None,
+                 modifiers: dict | None = None) -> "MissionResult":
+        """Run the mission simulation and return results. `modifiers` are
+        the player's in-flight event choices (see MissionSimulator)."""
         from .simulation import MissionSimulator
-        sim = MissionSimulator(self, seed=seed)
+        sim = MissionSimulator(self, seed=seed, modifiers=modifiers)
         result = sim.run()
         # Reflect the run in the resource budget (time used, data volumes)
         self.resources.time_used_months = result.months_elapsed

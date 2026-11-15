@@ -40,6 +40,31 @@ TRAIL_COLOR = "#F1F5FF"
 LABEL_COLOR = T.TEXT_MUTED
 
 
+# --------------------------------------------------------------------------
+# Shared geometry conventions (also used by the 3D viewport's HUD minimap)
+# --------------------------------------------------------------------------
+def bezier(p0, p1, p2, t: float) -> tuple[float, float]:
+    """Point on a quadratic Bezier curve — every transfer arc uses this."""
+    mt = 1 - t
+    return (mt * mt * p0[0] + 2 * mt * t * p1[0] + t * t * p2[0],
+            mt * mt * p0[1] + 2 * mt * t * p1[1] + t * t * p2[1])
+
+
+def control_point(p0, p2, arc_dir: float = -1.0, max_height: float = 200.0,
+                  ratio: float = 0.45) -> tuple[float, float]:
+    """Control point that bows a transfer arc away from the straight line:
+    up (arc_dir -1) for the outbound leg, down (+1) for the return leg."""
+    mx, my = (p0[0] + p2[0]) / 2, (p0[1] + p2[1]) / 2
+    height = min(max_height, abs(p2[0] - p0[0]) * ratio)
+    return mx, my + arc_dir * height
+
+
+def map_fraction(dest: Planet) -> float:
+    """0..1 horizontal placement of a destination on a transfer map: a
+    log-ish scale so Mercury isn't on top of Earth and Neptune fits."""
+    return (math.log1p(dest.distance_au) / math.log1p(30.1)) ** 0.8
+
+
 class TrajectoryCanvas(ctk.CTkFrame):
     """Canvas showing the full Earth -> planet -> orbit -> Earth mission."""
 
@@ -157,22 +182,15 @@ class TrajectoryCanvas(ctk.CTkFrame):
             x = 300.0
         else:
             # Log scale so Mercury isn't on top of Earth and Neptune isn't off-screen
-            x = 170.0 + (math.log1p(dest.distance_au) / math.log1p(30.1)) ** 0.8 * (self._canvas_w() - 270.0)
+            x = 170.0 + map_fraction(dest) * (self._canvas_w() - 270.0)
         y = self._canvas_h() / 2 - 40  # slight vertical offset for visual interest
         return x, y
 
     def _bezier(self, p0, p1, p2, t: float) -> tuple[float, float]:
-        mt = 1 - t
-        x = mt * mt * p0[0] + 2 * mt * t * p1[0] + t * t * p2[0]
-        y = mt * mt * p0[1] + 2 * mt * t * p1[1] + t * t * p2[1]
-        return x, y
+        return bezier(p0, p1, p2, t)
 
     def _control_point(self, p0, p2, arc_dir: float = -1.0) -> tuple[float, float]:
-        mx = (p0[0] + p2[0]) / 2
-        my = (p0[1] + p2[1]) / 2
-        dist = abs(p2[0] - p0[0])
-        height = min(200.0, dist * 0.45)
-        return mx, my + arc_dir * height
+        return control_point(p0, p2, arc_dir)
 
     def _orbit_points(self, center, radius: float, loops: int = 1,
                       n_per_loop: int = 80, start_angle: float = 0.0

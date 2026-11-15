@@ -122,7 +122,7 @@ class GlossaryText(tk.Text):
         self.tag_configure(self._LINK_TAG, foreground=T.ACCENT, underline=True)
         self.tag_configure(self._HOVER_TAG, foreground=T.ACCENT_HOVER)
         try:   # Tk 8.7+/9: a softer underline than the link colour itself
-            self.tag_configure(self._LINK_TAG, underlinefg="#2B7FB0")
+            self.tag_configure(self._LINK_TAG, underlinefg="#008C99")
         except tk.TclError:
             pass
 
@@ -862,30 +862,135 @@ class ScoreRing(tk.Canvas):
 
 
 class Toast(ctk.CTkFrame):
-    """Non-blocking notification that slides in at the top-right of the
-    window and dismisses itself (replaces modal 'Notice' pop-ups)."""
+    """Animated, non-blocking notification.
 
+    Toasts queue up and play one after another: each slides in from the
+    right edge of the window, waits, then slides back out — so a burst of
+    milestones ("Lift-off!", "Gold medal!", "Rank up!") is shown in order
+    instead of each replacing the last. Use `Toast.show(root, ...)`.
+    """
+
+    _queue: list[tuple] = []
     _current: "Toast | None" = None
+    SLIDE_MS = 220
+    FRAMES = 11
 
-    def __init__(self, root, message: str, tone: str = "warning",
-                 duration_ms: int = 3800) -> None:
-        if Toast._current is not None and Toast._current.winfo_exists():
-            Toast._current.destroy()
+    @classmethod
+    def show(cls, root, message: str, tone: str = "warning", icon: str | None = None,
+             duration_ms: int = 2600) -> None:
+        cls._queue.append((root, message, tone, icon, duration_ms))
+        if cls._current is None or not cls._current.winfo_exists():
+            cls._next()
+
+    @classmethod
+    def clear(cls) -> None:
+        cls._queue.clear()
+        if cls._current is not None and cls._current.winfo_exists():
+            cls._current.destroy()
+        cls._current = None
+
+    @classmethod
+    def _next(cls) -> None:
+        cls._current = None
+        while cls._queue:
+            root, message, tone, icon, duration = cls._queue.pop(0)
+            try:
+                if root.winfo_exists():
+                    cls._current = cls(root, message, tone, icon, duration)
+                    return
+            except tk.TclError:
+                continue
+
+    def __init__(self, root, message: str, tone: str, icon: str | None,
+                 duration_ms: int) -> None:
         fg, bg = T.TONES[tone]
         super().__init__(root, fg_color=bg, corner_radius=T.RADIUS_SM,
-                         border_width=1, border_color=fg)
-        Toast._current = self
-        icon = {"danger": "✕", "success": "✓", "accent": "i"}.get(tone, "!")
-        text(self, icon, (13, "bold"), fg, width=18, anchor="center").pack(
+                         border_width=2, border_color=fg)
+        glyph = icon or {"danger": "✕", "success": "✓", "accent": "★"}.get(tone, "!")
+        text(self, glyph, (16, "bold"), fg, width=24, anchor="center").pack(
             side="left", padx=(14, 6), pady=12)
-        text(self, message, (13, "normal"), T.TEXT, wraplength=340).pack(
-            side="left", padx=(0, 16), pady=12)
-        self.place(relx=1.0, y=T.PAD, x=-T.PAD_LG, anchor="ne")
+        text(self, message, (14, "bold"), T.TEXT, wraplength=340).pack(
+            side="left", padx=(0, 18), pady=12)
+        self._duration = duration_ms
+        self._offset = 0.0
+        self.place(relx=1.0, y=T.PAD + 60, x=600, anchor="ne")   # start off-screen
         self.lift()
-        self.after(duration_ms, self._dismiss)
+        self.after(10, self._slide, 0, True)
 
-    def _dismiss(self) -> None:
-        if self.winfo_exists():
+    def _slide(self, frame: int, entering: bool) -> None:
+        if not self.winfo_exists():
+            return
+        width = self.winfo_reqwidth() + T.PAD_LG + 20
+        t = frame / self.FRAMES
+        eased = 1 - (1 - t) ** 3                    # ease-out cubic
+        hidden, shown = width, -T.PAD_LG
+        x = hidden + (shown - hidden) * eased if entering else shown + (hidden - shown) * t * t
+        self.place_configure(x=int(x))
+        if frame < self.FRAMES:
+            self.after(self.SLIDE_MS // self.FRAMES, self._slide, frame + 1, entering)
+        elif entering:
+            self.after(self._duration, self._slide, 0, False)
+        else:
             self.destroy()
-        if Toast._current is self:
-            Toast._current = None
+            Toast._next()
+
+
+class MedalBadge(tk.Canvas):
+    """Gold / silver / bronze medal on a ribbon, popping in with a bounce."""
+
+    COLOURS = {"gold": (T.GOLD, "#B8860B", "1ST"), "silver": (T.SILVER, "#8C98AB", "2ND"),
+               "bronze": (T.BRONZE, "#8A4B1F", "3RD")}
+
+    def __init__(self, master, medal: str, size: int = 150, bg: str = T.CARD) -> None:
+        super().__init__(master, width=size, height=int(size * 1.15), bg=bg,
+                         highlightthickness=0)
+        self.medal, self.size = medal, size
+        self._after = None
+        self._draw(0.0)
+
+    def _draw(self, k: float) -> None:
+        self.delete("all")
+        s = self.size
+        cx, cy = s / 2, s * 0.68
+        face, rim, label = self.COLOURS[self.medal]
+        # Ribbon: two tails in violet and cyan meeting behind the medal
+        self.create_polygon(cx - s * 0.30, 0, cx - s * 0.08, 0, cx + s * 0.06, cy - s * 0.18,
+                            cx - s * 0.12, cy - s * 0.12, fill=T.VIOLET, outline="")
+        self.create_polygon(cx + s * 0.30, 0, cx + s * 0.08, 0, cx - s * 0.06, cy - s * 0.18,
+                            cx + s * 0.12, cy - s * 0.12, fill=T.ACCENT, outline="")
+        r = s * 0.30 * k
+        if r < 1:
+            return
+        self.create_oval(cx - r - 4, cy - r - 4, cx + r + 4, cy + r + 4, fill=rim, outline="")
+        self.create_oval(cx - r, cy - r, cx + r, cy + r, fill=face, outline="")
+        self.create_oval(cx - r * 0.72, cy - r * 0.72, cx + r * 0.72, cy + r * 0.72,
+                         outline=rim, width=2)
+        # Star
+        pts = []
+        for i in range(10):
+            a = -math.pi / 2 + i * math.pi / 5
+            rr = r * (0.42 if i % 2 == 0 else 0.18)
+            pts += [cx + rr * math.cos(a), cy - r * 0.08 + rr * math.sin(a)]
+        self.create_polygon(pts, fill=rim, outline="")
+        if k > 0.9:
+            self.create_text(cx, cy + r * 0.5, text=label, fill=rim,
+                             font=canvas_font_bold(max(8, int(r * 0.22))))
+
+    def pop(self) -> None:
+        """Bounce in: grow past full size, then settle."""
+        frames = 18
+
+        def step(i: int) -> None:
+            if not self.winfo_exists():
+                return
+            t = i / frames
+            k = 1 + 0.18 * math.sin(math.pi * t) if t > 0.55 else t / 0.55
+            self._draw(min(1.18, k) if i < frames else 1.0)
+            if i < frames:
+                self._after = self.after(22, step, i + 1)
+
+        step(0)
+
+
+def canvas_font_bold(size: int):
+    return T.canvas_font(size, bold=True)

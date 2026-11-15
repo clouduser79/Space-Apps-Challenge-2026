@@ -18,46 +18,54 @@ import customtkinter as ctk
 # --------------------------------------------------------------------------
 # Surfaces (darkest -> lightest). Each step up is one level of elevation.
 # --------------------------------------------------------------------------
-BG = "#060A13"            # window background / deep space
-SURFACE = "#0C1322"       # large panels (sidebar, header)
-CARD = "#111A2C"          # cards
-CARD_HOVER = "#17233A"    # card under the pointer
-RAISED = "#1B2942"        # chips, progress-bar tracks, inputs
-BORDER = "#22304A"        # hairline borders
-BORDER_STRONG = "#3A4F78" # hovered / emphasised borders
+BG = "#0A0E17"            # obsidian — window background / deep space
+SURFACE = "#0E1420"       # large panels (sidebar, header)
+CARD = "#121A29"          # cards
+CARD_HOVER = "#18233A"    # card under the pointer
+RAISED = "#1C2638"        # chips, progress-bar tracks, inputs
+BORDER = "#232F45"        # hairline borders
+BORDER_STRONG = "#3A4A6B" # hovered / emphasised borders
 
 # --------------------------------------------------------------------------
 # Text
 # --------------------------------------------------------------------------
-TEXT = "#E8EEFA"
-TEXT_MUTED = "#9AA8C4"
-TEXT_DIM = "#62718F"
-TEXT_ON_ACCENT = "#03131F"
+TEXT = "#EAF2FF"
+TEXT_MUTED = "#9AA9C7"
+TEXT_DIM = "#62708F"
+TEXT_ON_ACCENT = "#00141A"
 
 # --------------------------------------------------------------------------
-# Accent + status colours, each with a dark tint used as a badge background
+# Neon accents + status colours, each with a dark tint for badge backgrounds
 # --------------------------------------------------------------------------
-ACCENT = "#38BDF8"
-ACCENT_HOVER = "#7DD3FC"
-ACCENT_BG = "#0B2A40"
+ACCENT = "#00F0FF"        # Neon Cyan — anything you can click
+ACCENT_HOVER = "#8AF9FF"
+ACCENT_BG = "#05303A"
 
-VIOLET = "#A78BFA"
-VIOLET_BG = "#221B45"
+# Electric Violet is too dark to read as text on obsidian (~2.4:1), so it is
+# used for fills, bars and borders; VIOLET_TEXT is its readable tint.
+VIOLET = "#7000FF"
+VIOLET_TEXT = "#B48CFF"
+VIOLET_BG = "#1B0E40"
 
-SUCCESS = "#34D399"
-SUCCESS_BG = "#0C2C25"
+SUCCESS = "#00FF66"       # Success Green
+SUCCESS_BG = "#06331F"
 
-WARNING = "#FBBF24"
-WARNING_BG = "#33270B"
+WARNING = "#FFC233"
+WARNING_BG = "#352809"
 
-DANGER = "#F87171"
-DANGER_HOVER = "#FCA5A5"
-DANGER_BG = "#3A191D"
+DANGER = "#FF4D6D"
+DANGER_HOVER = "#FF8FA3"
+DANGER_BG = "#3D1220"
+
+# Medals
+GOLD = "#FFD54A"
+SILVER = "#D6DEEA"
+BRONZE = "#E08A4B"
 
 # tone name -> (foreground, tinted background)
 TONES: dict[str, tuple[str, str]] = {
     "accent": (ACCENT, ACCENT_BG),
-    "violet": (VIOLET, VIOLET_BG),
+    "violet": (VIOLET_TEXT, VIOLET_BG),
     "success": (SUCCESS, SUCCESS_BG),
     "warning": (WARNING, WARNING_BG),
     "danger": (DANGER, DANGER_BG),
@@ -65,9 +73,9 @@ TONES: dict[str, tuple[str, str]] = {
 }
 
 # Trajectory view
-SUN = "#FCD34D"
+SUN = "#FFD54A"
 OUTBOUND = ACCENT
-RETURN = VIOLET
+RETURN = "#9B5CFF"        # Electric Violet, lifted enough to read as a line
 ORBIT_RING = WARNING
 LANDING = SUCCESS
 

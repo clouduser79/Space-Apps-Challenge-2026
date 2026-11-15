@@ -26,29 +26,27 @@ wizard — one screen at a time with Back/Next navigation:
    power, cost, and data-rate trade-offs
 5. **Orbit & launch** — choose orbital regime, launch vehicle, and
    destination planet
-6. **Dashboard** — live resource budgets (mass, power, cost, data, time)
-   with feasibility warnings
-7. **Flight path** — animated 2D trajectory visualization
-2. **Scenario** — pick a mission scenario (difficulty-scaled budget and
+6. **Scenario** — pick a mission scenario (difficulty-scaled budget and
    event frequency, or sandbox mode)
-3. **Spacecraft bus** — add/remove components grouped by category
+7. **Spacecraft bus** — add/remove components grouped by category
    (Power Generation, Communications, Attitude Control, Avionics &
    Storage, Structure, Propulsion); required groups are highlighted
-4. **Payload** — add/remove instruments grouped by capability tag
+8. **Payload** — add/remove instruments grouped by capability tag
    (imaging, spectroscopy, subsurface, space weather, sample return,
    comms); each adds science but consumes mass, power, cost, and data
-5. **Orbit & launch** — choose orbital regime, launch vehicle (shown as
+9. **Orbit & launch** — choose orbital regime, launch vehicle (shown as
    a tiered button list: Light / Medium / Heavy), and destination planet.
    All dropdowns start blank; Next is blocked with a warning until
    orbit, vehicle, and destination are selected, and scenario-disallowed
    orbits snap back to blank
-6. **Dashboard** — live resource budgets (mass, power, cost, data
-   storage, time) with feasibility warnings
-7. **Flight path** — animated 2D trajectory with planet artwork and a
-   rotating rocket sprite
-8. **Planet facts** — educational facts about the chosen destination
-9. **Simulation** — blocked if the design has unresolved errors
-   (sandbox mode excepted); shows score + report on success
+10. **Planet facts** — educational facts about the chosen destination
+11. **Review** — live resource budgets (mass, power, cost, data storage,
+    time) with feasibility warnings, save/load and the leaderboard
+12. **Launch** — run the simulation and watch it fly in 3D, with a 2D
+    transfer minimap ("Preview route" replays the full round trip); launch
+    is blocked when the design has unresolved errors (sandbox excepted)
+13. **Results** — opens automatically when the flight ends: score,
+    breakdown, objectives, anomalies and engineering feedback
 
 ### Spacecraft design
 
@@ -102,13 +100,21 @@ Mission Analysis Tool, `gmat-win-R2026a/`) installation:
 - **Orbit scoring**: each orbit is scored 0–100 for a destination with
   human-readable reasons (body match, altitude, inclination, period,
   distance)
-- **Animated flight path** (`src/ui/trajectory_view.py`): outbound
-  transfer arc → orbit intercept → 2 loops around the destination →
-  spiral departure → return to Earth. Planets render as real artwork
-  from `planetImages/` (Pillow-resized, cached), Earth included, and
-  the rocket flies the route as a rotated `rocket.png` sprite (falls
-  back to a triangle if the image is missing). Orbit routes are sized
-  from the displayed planet diameter, so resizing never clips the path
+- **Transfer map** (`src/ui/trajectory_view.py`): the 2D geometry —
+  outbound arc → parking orbit → return to Earth — now drawn as the
+  Launch screen's minimap. (`TrajectoryCanvas`, the old full-screen
+  Flight Path view, is kept in the file but no longer used.)
+- **3D mission view** (Launch screen): a pure-Python canvas 3D engine
+  (`src/ui/spacecraft_view.py`) flies Tharun's Rocket — strap-on boosters
+  that separate, unfolding solar arrays, an opening comms dish — to a
+  procedurally textured destination sized by its real diameter
+  (`src/ui/planet_render.py`) — launching from a 3D Earth, slipping into
+  orbit, flying three laps, then arcing home and landing back on Earth.
+  Paths are smooth cubic curves, and the 3D view and 2D map share one
+  flight timeline so they stay in step. It follows the simulation phases live,
+  shows the approach vector, range and real orbital speed (√(GM/r)), and
+  pins a 2D transfer minimap in the corner. Drag to orbit the camera.
+  Preview the rocket alone with `python -m src.ui.spacecraft_view`.
 
 ### Simulation engine
 
@@ -142,6 +148,35 @@ The post-mission report explains **why** the mission succeeded or
 failed with plain-language engineering feedback (e.g., "your
 instruments generate far more data than your comms can downlink").
 Scores ≥ 90 show a **SUCCESS!** banner.
+
+### Gamification
+
+- **Design grade (A–F)** in the telemetry sidebar, updated on every click,
+  with a "Next:" tip naming the most important fix (`design_grade()` in
+  `src/ui/telemetry.py`)
+- **XP & ranks** — Cadet → Pilot → Navigator → Commander → Admiral →
+  Legend, stored in `src/game/saves/profile.json` (`src/game/profile.py`).
+  XP per flight = 25 + score + 20 per objective + medal bonus; a launch
+  failure still earns 10
+- **Event cards** — twice per flight the simulation pauses for a tactical
+  choice (e.g. burn fuel to dodge micrometeorites vs. accept power dips).
+  Choices feed real modifiers into the simulation, which re-runs with the
+  same seed so only your decision changes the outcome
+  (`src/game/flight_events.py`)
+- **Medals** — gold (all objectives + score ≥ 85), silver (all
+  objectives), bronze (some objectives); sandbox medals on score alone
+- **Milestone toasts** slide in for lift-off, separation, orbit insertion,
+  medals, XP and rank-ups
+- **Pilot leaderboard** on the Results screen: every flight you've flown
+  (score, objectives, XP gained, medal, rank at the time), ranked by score,
+  with lifetime totals — total XP earned, XP to spend, rank, flights,
+  medals and best score. Each new flight is added on top of the log.
+- **XP shop** (header button, locked items, or Results): premium parts —
+  RTG, large solar array, Ka-band comms, precision pointing, high-res
+  imager, radar sounder, sample return, GEO and lunar orbits, the heavy
+  launcher — are locked until bought with XP (`src/game/shop.py`). The
+  starter kit still completes every scenario. Spending XP never lowers
+  your rank: rank follows lifetime XP, the shop spends a separate balance.
 
 ### Save / load / leaderboard
 
@@ -209,16 +244,13 @@ src/
     widgets.py             # Reusable cards, badges, meters, stepper, score ring
     telemetry.py           # Live resource sidebar + readiness checks
     assets.py              # Planet / rocket image loading (Pillow optional)
-    screens/               # One module per wizard step (welcome, bus &
-                           #   payload, orbit & launch, flight & facts,
-                           #   review, launch & results)
+    screens/               # One module per wizard step: welcome, bus &
+                           #   payload, orbit & launch, planet facts,
+                           #   review, launch (+ launch_viewport.py, the
+                           #   3D mission view) and results
     trajectory_view.py     # 2D animated trajectory canvas
-    app.py                 # Main wizard UI (customtkinter): grouped
-                           #   pickers, blank-dropdown validation,
-                           #   scroll-wheel support, save/load, sim gate
-    trajectory_view.py     # 2D animated trajectory canvas with planet
-                           #   and rocket artwork (Pillow)
-    spacecraft_view.py     # Spacecraft visualization stub
+    spacecraft_view.py     # Canvas 3D engine + Tharun's Rocket model
+    planet_render.py       # Procedural planet textures, sizes, rings
   data/
     instruments.json       # Instrument stats
     orbits.json            # Orbit definitions

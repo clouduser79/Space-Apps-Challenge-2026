@@ -1,4 +1,4 @@
-"""Flight Path (animated trajectory) and Planet Facts screens."""
+"""Planet Facts screen."""
 
 from __future__ import annotations
 
@@ -8,99 +8,12 @@ from src.game.planets import score_orbit_for
 from src.ui import assets
 from src.ui import theme as T
 from src.ui.screens.base import Screen
-from src.ui.screens.orbit import short_distance
-from src.ui.trajectory_view import TrajectoryCanvas
 from src.ui.widgets import (Card, Meter, ScrollFrame, StatTile, StatusRow, eyebrow,
-                            ghost_button, glossary_text, primary_button, text)
+                            ghost_button, glossary_text, text)
 
 
 def _day_length(hours: float) -> str:
     return f"{hours:.1f} h" if hours < 48 else f"{hours / 24:,.1f} Earth days"
-
-
-class FlightScreen(Screen):
-    key = "flight"
-    title = "Flight Path"
-    subtitle = ("Your 2D transfer: out along the blue arc, two laps of a parking "
-                "orbit, a spiral departure, then home on the violet arc.")
-    show_telemetry = False
-
-    def __init__(self, master, app) -> None:
-        super().__init__(master, app)
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
-
-        head = ctk.CTkFrame(self, fg_color="transparent")
-        head.grid(row=0, column=0, sticky="ew", pady=(0, T.PAD))
-        head.grid_columnconfigure(0, weight=1)
-        self.page_header(head).grid(row=0, column=0, sticky="ew")
-        self.fly_btn = primary_button(head, "▶  Animate transfer", self._animate,
-                                      width=200, height=44)
-        self.fly_btn.grid(row=0, column=1, sticky="e", padx=(T.PAD, 0))
-
-        tiles = ctk.CTkFrame(self, fg_color="transparent")
-        tiles.grid(row=1, column=0, sticky="ew", pady=(0, T.PAD))
-        tiles.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="t")
-        self.tiles = {}
-        for i, (key, caption) in enumerate([("dest", "Destination"),
-                                            ("dist", "Distance"),
-                                            ("lv", "Launch vehicle"),
-                                            ("orbit", "Parking orbit")]):
-            tile = StatTile(tiles, caption, fg_color=T.CARD)
-            tile.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else T.PAD_SM, 0))
-            self.tiles[key] = tile
-
-        frame = Card(self, fg_color=T.BG)
-        frame.grid(row=2, column=0, sticky="nsew")
-        frame.grid_columnconfigure(0, weight=1)
-        frame.grid_rowconfigure(0, weight=1)
-        self.trajectory = TrajectoryCanvas(frame)
-        self.trajectory.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
-
-        self.status = text(self, "", T.SMALL, T.TEXT_MUTED)
-        self.status.grid(row=3, column=0, sticky="ew", pady=(10, 0))
-
-    def refresh(self) -> None:
-        m = self.mission
-        d = m.destination
-        self.tiles["dest"].set(d.name if d else "—", "accent" if d else "neutral")
-        self.tiles["dist"].set(short_distance(d.distance_label) if d else "—")
-        self.tiles["lv"].set(m.launch_vehicle.name if m.launch_vehicle else "—")
-        self.tiles["orbit"].set(m.orbit.name.split(" (")[0] if m.orbit else "—")
-        if self.trajectory.is_animating:
-            return
-        if d is None:
-            self.trajectory.show_empty()
-            self.fly_btn.configure(state="disabled")
-            self.status.configure(text="No destination yet — choose one in "
-                                       "“Orbit & Launch”.")
-        else:
-            self.trajectory.plot(d)
-            self.fly_btn.configure(state="normal")
-            self.status.configure(text=f"Trajectory plotted to {d.name}. Press "
-                                       "Animate to fly it.")
-
-    def on_hide(self) -> None:
-        self.trajectory.cancel_animation()
-
-    def _animate(self) -> None:
-        dest = self.mission.destination
-        if dest is None:
-            return
-        self.fly_btn.configure(state="disabled", text="In flight…")
-        self.status.configure(text="Rocket in transit — outbound → orbit → return.",
-                              text_color=T.ACCENT)
-        self.trajectory.animate(dest, on_done=lambda: self.after(0, self._landed))
-
-    def _landed(self) -> None:
-        if not self.winfo_exists():
-            return
-        self.fly_btn.configure(state="normal", text="▶  Fly again")
-        if self.trajectory.flight_completed:
-            self.status.configure(text=f"✓  Round trip to {self.mission.destination.name} "
-                                       "complete. Welcome home!", text_color=T.SUCCESS)
-        else:
-            self.status.configure(text="Flight interrupted.", text_color=T.TEXT_MUTED)
 
 
 class FactsScreen(Screen):
@@ -168,13 +81,13 @@ class FactsScreen(Screen):
             StatTile(tiles, caption, value, fg_color=T.CARD).grid(
                 row=0, column=i, sticky="ew", padx=(0 if i == 0 else T.PAD_SM, 0))
 
-        eyebrow(self.body, "Fun facts", T.VIOLET).grid(sticky="w", pady=(T.PAD_SM, 8))
+        eyebrow(self.body, "Fun facts", T.VIOLET_TEXT).grid(sticky="w", pady=(T.PAD_SM, 8))
         for i, fact in enumerate(p.facts, 1):
             card = Card(self.body)
             card.grid(sticky="ew", pady=(0, T.PAD_SM), padx=(0, T.PAD_SM))
             card.grid_columnconfigure(1, weight=1)
             ctk.CTkLabel(card, text=f"{i:02d}", width=40, height=40, corner_radius=10,
-                         fg_color=T.VIOLET_BG, text_color=T.VIOLET,
+                         fg_color=T.VIOLET_BG, text_color=T.VIOLET_TEXT,
                          font=T.font(14, "bold")).grid(row=0, column=0, padx=T.PAD,
                                                        pady=14)
             glossary_text(card, fact, (14, "normal")).grid(
