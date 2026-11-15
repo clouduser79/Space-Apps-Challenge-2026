@@ -1,4 +1,4 @@
-# Space Mission Design Game
+# Space Mission Game
 
 An interactive game where players design, manage, and simulate a complete
 space mission — choosing objectives, spacecraft components, instruments,
