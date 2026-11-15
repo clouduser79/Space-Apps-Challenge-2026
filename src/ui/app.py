@@ -3,8 +3,8 @@
 Flow:
   Welcome (commander name + scenario)
     -> Designer wizard, one screen at a time:
-       Bus -> Payload -> Orbit & Launch -> Flight Path -> Planet Facts
-       -> Mission Review -> Launch (simulation + report)
+       Bus -> Payload -> Orbit & Launch -> Planet Facts -> Mission Review
+       -> Launch (simulation, flown in 3D) -> Results (mission report)
 
 This module is only the shell: window, header, step navigation, the live
 telemetry sidebar and notifications. Each step lives in src/ui/screens/,
@@ -26,14 +26,16 @@ from src.game.launch_vehicle import get_catalog as get_launch_vehicles
 from src.game.mission import Mission
 from src.game.orbit import Orbit
 from src.game.players import Player
+from src.game.profile import load_profile, save_profile
 from src.game.scenarios import get_scenarios
 from src.ui import assets
 from src.ui import theme as T
 from src.ui.screens.base import Screen
 from src.ui.screens.design import BusScreen, PayloadScreen
-from src.ui.screens.explore import FactsScreen, FlightScreen
+from src.ui.screens.explore import FactsScreen
 from src.ui.screens.launch import LaunchScreen
 from src.ui.screens.orbit import OrbitLaunchScreen
+from src.ui.screens.results import ResultsScreen
 from src.ui.screens.review import ReviewScreen
 from src.ui.screens.welcome import WelcomeView
 from src.ui.telemetry import TelemetryPanel
@@ -47,10 +49,10 @@ SCREENS: list[tuple[type[Screen], str]] = [
     (BusScreen, "Bus"),
     (PayloadScreen, "Payload"),
     (OrbitLaunchScreen, "Orbit & Launch"),
-    (FlightScreen, "Flight Path"),
     (FactsScreen, "Planet Facts"),
     (ReviewScreen, "Review"),
     (LaunchScreen, "Launch"),
+    (ResultsScreen, "Results"),
 ]
 GATE_KEY = "orbit"   # can't move past this step without orbit + LV + destination
 
@@ -90,6 +92,8 @@ class GameApp(ctk.CTk):
         self.minsize(1120, 720)
 
         self.mission: Mission | None = None
+        self.last_flight: dict | None = None   # set by Launch, shown by Results
+        self.profile = load_profile()           # XP + medals, saves/profile.json
         self.orbits = load_orbits()
         self.instruments = get_instruments()
         self.launch_vehicles = get_launch_vehicles()
@@ -113,6 +117,8 @@ class GameApp(ctk.CTk):
         mission.players = [Player(name, "Commander")]
         mission.set_objective(scenario.objective)
         self.mission = mission
+        self.profile.name = name
+        save_profile(self.profile)
         self.welcome.destroy()
         self._build_shell()
         self.show_screen(self.order[0])
@@ -122,6 +128,7 @@ class GameApp(ctk.CTk):
         if self.current:
             self.screens[self.current].on_hide()   # stops any flight animation
         self.mission = None
+        self.last_flight = None
         self.current = None
         self.screens.clear()
         if self.shell is not None:
@@ -134,6 +141,7 @@ class GameApp(ctk.CTk):
         if not mission.players and self.mission is not None:
             mission.players = self.mission.players
         self.mission = mission
+        self.last_flight = None                # results belonged to the old design
         self._refresh_header()
         self.on_design_changed()
 
@@ -196,6 +204,10 @@ class GameApp(ctk.CTk):
         self.h_commander.pack(side="left", padx=(0, 12))
         self.h_badge = Badge(right, "")
         self.h_badge.pack(side="left", padx=(0, T.PAD))
+        self.h_xp = Badge(right, "", "violet")
+        self.h_xp.pack(side="left", padx=(0, 8))
+        self.shop_btn = ghost_button(right, "🛒  Shop", self.open_shop, width=96, height=34)
+        self.shop_btn.pack(side="left", padx=(0, 8))
         self.restart_btn = ghost_button(right, "New mission", self.restart,
                                         width=120, height=34)
         self.restart_btn.pack(side="left")
@@ -207,6 +219,7 @@ class GameApp(ctk.CTk):
         commander = m.players[0].name if m.players else "Commander"
         self.h_commander.configure(text=f"Cmdr. {commander}")
         self.h_badge.set(*assets.difficulty_tone(m.scenario))
+        self.h_xp.set(f"⭐ {self.profile.balance:,} XP", "violet")
 
     def _build_footer(self, shell) -> None:
         footer = ctk.CTkFrame(shell, fg_color=T.SURFACE, corner_radius=0, height=68)
@@ -226,6 +239,8 @@ class GameApp(ctk.CTk):
     # ==================================================================
     def _gate_problem(self, target: str) -> str | None:
         """Why the player may not jump to `target` yet (None if allowed)."""
+        if target == "results" and self.last_flight is None:
+            return "Launch the mission first — results appear after the flight."
         if self.order.index(target) <= self.order.index(GATE_KEY):
             return None
         m = self.mission
@@ -243,6 +258,8 @@ class GameApp(ctk.CTk):
         problem = self._gate_problem(key)
         if problem:
             self.toast(problem)
+            if key == "results":            # nothing flown yet: stay put
+                return
             if self.current != GATE_KEY:
                 key = GATE_KEY
             else:
@@ -290,12 +307,27 @@ class GameApp(ctk.CTk):
             button.configure(state=state)
         self.next_btn.configure(state=state)
         self.restart_btn.configure(state=state)
+        self.shop_btn.configure(state=state)
         index = self.order.index(self.current)
         self.back_btn.configure(state=state if index > 0 else "disabled")
 
     # ==================================================================
     # Shared services for screens
     # ==================================================================
+    def open_shop(self, focus: str | None = None) -> None:
+        """Open the XP shop; `focus` highlights one item."""
+        from src.ui.shop import open_shop
+        open_shop(self, focus)
+
+    def on_profile_changed(self) -> None:
+        """XP or unlocks changed: refresh the header and the current screen."""
+        if self.shell is None:
+            return
+        self._refresh_header()
+        self.telemetry.refresh_rank()
+        if self.current:
+            self.screens[self.current].refresh()
+
     def on_design_changed(self) -> None:
         """Every design mutation funnels through here."""
         if self.mission is None or self.current is None:
@@ -303,8 +335,9 @@ class GameApp(ctk.CTk):
         self.telemetry.refresh()
         self.screens[self.current].refresh()
 
-    def toast(self, message: str, tone: str = "warning") -> None:
-        Toast(self, message, tone)
+    def toast(self, message: str, tone: str = "warning", icon: str | None = None,
+              duration_ms: int = 2600) -> None:
+        Toast.show(self, message, tone, icon, duration_ms)
 
 
 def main() -> None:

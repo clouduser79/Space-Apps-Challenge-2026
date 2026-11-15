@@ -11,6 +11,7 @@ from typing import Callable
 
 import customtkinter as ctk
 
+from src.game.shop import is_unlocked, price_of
 from src.game.spacecraft import BUS_COMPONENTS
 from src.ui import theme as T
 from src.ui.screens.base import Screen
@@ -58,6 +59,15 @@ class PartCard(SelectableCard):
     def set_installed(self, installed: bool) -> None:
         self.set_selected(installed)
         style_toggle(self.toggle, installed)
+
+    def set_price_lock(self, price: int | None) -> None:
+        """Locked shop item: dimmed card, '🔒 150 XP' button (opens the shop)."""
+        self.set_locked(price is not None)
+        if price is not None:
+            self.set_selected(False)
+            self.toggle.configure(text=f"🔒 {price} XP", fg_color=T.VIOLET_BG,
+                                  hover_color=T.VIOLET, border_color=T.VIOLET,
+                                  text_color=T.VIOLET_TEXT)
 
 
 class GroupHeader(ctk.CTkFrame):
@@ -122,10 +132,21 @@ class CatalogScreen(Screen):
     def installed_ids(self) -> set[str]:
         raise NotImplementedError
 
+    def locked(self, item_id: str) -> bool:
+        """True (and opens the shop on that item) if it must be bought first."""
+        if item_id in self.installed_ids() or is_unlocked(self.app.profile, item_id):
+            return False
+        self.app.open_shop(focus=item_id)
+        return True
+
     def refresh(self) -> None:
         owned = self.installed_ids()
+        profile = self.app.profile
         for key, card in self.cards.items():
             card.set_installed(key in owned)
+            # Parts already in the design stay usable (e.g. a loaded design)
+            locked = key not in owned and not is_unlocked(profile, key)
+            card.set_price_lock(price_of(key) if locked else None)
         for header, keys in self.headers:
             header.set_count(sum(1 for k in keys if k in owned))
 
@@ -193,6 +214,8 @@ class BusScreen(CatalogScreen):
         return {c.id for c in self.mission.spacecraft.bus}
 
     def _toggle(self, cid: str) -> None:
+        if self.locked(cid):
+            return
         if cid in self.installed_ids():
             self.mission.remove_bus_component(cid)
         else:
@@ -290,6 +313,8 @@ class PayloadScreen(CatalogScreen):
         super().refresh()
 
     def _toggle(self, iid: str) -> None:
+        if self.locked(iid):
+            return
         if iid in self.installed_ids():
             self.mission.remove_instrument(iid)
         else:

@@ -44,7 +44,7 @@ class WelcomeView(ctk.CTkFrame):
     def _draw_hero(self, w: int, h: int) -> None:
         c = self.hero
         c.delete("all")
-        draw_vertical_gradient(c, w, h, "#0F1E40", T.BG)
+        draw_vertical_gradient(c, w, h, "#1A0F45", T.BG)   # electric-violet dusk
         draw_stars(c, w, h, count=w * h // 2600, seed=11)
 
         # The copy goes in first so the artwork can be laid out *around* it:
@@ -182,7 +182,7 @@ class WelcomeView(ctk.CTkFrame):
         # Mission brief appears once a scenario is picked
         self.brief = Card(body, fg_color=T.CARD)
         self.brief.grid_columnconfigure(0, weight=1)
-        eyebrow(self.brief, "Mission brief", T.VIOLET).grid(
+        eyebrow(self.brief, "Mission brief", T.VIOLET_TEXT).grid(
             sticky="w", padx=T.PAD, pady=(T.PAD, 4))
         self.brief_objective = glossary_text(self.brief, "", (14, "bold"))
         self.brief_objective.grid(sticky="ew", padx=T.PAD)

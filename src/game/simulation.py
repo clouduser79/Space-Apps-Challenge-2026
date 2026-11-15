@@ -8,7 +8,7 @@ Produces a MissionResult for the scoring engine.
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -54,6 +54,16 @@ EVENT_DECK: list[RandomEvent] = [
 ]
 
 
+# Events that only happen because of a player's in-flight choice (never
+# rolled randomly, so adding them doesn't change the odds of the deck above).
+CHOICE_EVENTS: list[RandomEvent] = [
+    RandomEvent("Shield maneuver power dip", 0.0,
+                "Turned the spacecraft to shield its instruments — power margins "
+                "dipped and observing slowed for a while.",
+                science_multiplier=0.92, power_multiplier=0.75, duration_months=2),
+]
+
+
 @dataclass
 class MissionResult:
     """Output of a simulation run."""
@@ -90,10 +100,17 @@ class MissionSimulator:
     GB_PER_MBPS_MONTH = 0.324  # 1 Mbps continuous for ~30 days ≈ 324 GB; we use duty cycle
     DOWNLINK_DUTY_CYCLE = 0.15  # fraction of time actually downlinking
 
-    def __init__(self, mission: "Mission", seed: int | None = None) -> None:
+    def __init__(self, mission: "Mission", seed: int | None = None,
+                 modifiers: dict | None = None) -> None:
+        """`modifiers` carries the player's in-flight decisions (all optional):
+        science_mult, data_mult, event_freq_mult, ops_months_delta and
+        forced_events (names from EVENT_DECK that happen at the start of
+        operations), ops_months_mult. With none given the simulation behaves
+        as before."""
         self.mission = mission
         self.rng = random.Random(seed)
         self.events_triggered: list[str] = []
+        self.mods = modifiers or {}
 
     def run(self) -> MissionResult:
         m = self.mission
@@ -122,20 +139,35 @@ class MissionSimulator:
         body = m.orbit.body if m.orbit else "Earth"
         cruise_months = self.CRUISE_MONTHS.get(body, 6)
         ops_months = max(0.0, months_total - cruise_months)
+        ops_months = round(ops_months * self.mods.get("ops_months_mult", 1.0))
 
         # --- Phase 3: Operations (monthly loop) ---
         science_accum = 0.0
         data_gen_gb = 0.0
         data_down_gb = 0.0
+        # Active events are *copies* of the deck entries: their duration
+        # counts down per run without wearing out the shared deck (which used
+        # to make later runs in the same session shorter-lived).
         active_events: list[RandomEvent] = []
-        event_freq = m.scenario.event_frequency_multiplier
+        event_freq = (m.scenario.event_frequency_multiplier
+                      * self.mods.get("event_freq_mult", 1.0))
+        by_name = {ev.name: ev for ev in EVENT_DECK + CHOICE_EVENTS}
+        for name in self.mods.get("forced_events", []):
+            if name in by_name:
+                active_events.append(replace(by_name[name]))
+                self.events_triggered.append(name)
 
         month = 0.0
         while month < ops_months:
             # Roll for new events
+            # Every deck entry draws its roll each month, active or not, so a
+            # player's choice changes only what it says it changes — not the
+            # luck of every later event.
             for ev in EVENT_DECK:
-                if ev not in active_events and self.rng.random() < ev.probability * event_freq:
-                    active_events.append(ev)
+                roll = self.rng.random()
+                if (all(a.name != ev.name for a in active_events)
+                        and roll < ev.probability * event_freq):
+                    active_events.append(replace(ev))
                     self.events_triggered.append(ev.name)
 
             # Science accumulation
@@ -145,7 +177,7 @@ class MissionSimulator:
             science_accum += month_science
 
             # Data generation vs downlink
-            gen_gb = sc.data_rate_mbps * self.GB_PER_MBPS_MONTH
+            gen_gb = sc.data_rate_mbps * self.GB_PER_MBPS_MONTH * self.mods.get("data_mult", 1.0)
             down_cap_gb = sc.comms_mbps * self.GB_PER_MBPS_MONTH * self.DOWNLINK_DUTY_CYCLE
             data_gen_gb += gen_gb
             data_down_gb += min(gen_gb, down_cap_gb)
@@ -161,7 +193,7 @@ class MissionSimulator:
         objectives_met, objectives_failed = self._check_objectives(science_accum, data_backlog := data_gen_gb - data_down_gb)
 
         # Penalties
-        science_return = science_accum
+        science_return = science_accum * self.mods.get("science_mult", 1.0)
         if data_backlog > 1000:
             science_return *= 0.8  # overwhelmed storage/ops
         if m.spacecraft.power_margin_w < 0:

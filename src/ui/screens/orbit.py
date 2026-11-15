@@ -15,6 +15,7 @@ import customtkinter as ctk
 
 from src.game.gmat_bridge import get_bridge
 from src.game.launch_vehicle import orbit_capacity_class
+from src.game.shop import is_unlocked, price_of
 from src.game.planets import (MAX_BUDGET_USD, MIN_BUDGET_USD, PLANETS, budget_for,
                                reachable_planets, score_orbit_for)
 from src.ui import assets
@@ -139,7 +140,17 @@ class OrbitLaunchScreen(Screen):
         self.gmat_text = text(self.gmat_row, "", T.SMALL, T.TEXT_MUTED)
         self.gmat_text.pack(side="left", padx=10)
 
+    def _shop_locked(self, item_id: str, in_use: bool) -> bool:
+        """True (and opens the shop on that item) if it must be bought first."""
+        if in_use or is_unlocked(self.app.profile, item_id):
+            return False
+        self.app.open_shop(focus=item_id)
+        return True
+
     def _pick_orbit(self, orbit) -> None:
+        m = self.mission
+        if self._shop_locked(orbit.id, m.orbit is not None and m.orbit.id == orbit.id):
+            return
         allowed = self.mission.scenario.allowed_orbits
         if allowed and orbit.id not in allowed:
             self.app.toast(f"{orbit.name} is not allowed in this scenario.")
@@ -241,6 +252,9 @@ class OrbitLaunchScreen(Screen):
         self._place(grid, cards, 3)
 
     def _pick_lv(self, lv) -> None:
+        m = self.mission
+        if self._shop_locked(lv.id, m.launch_vehicle is not None and m.launch_vehicle.id == lv.id):
+            return
         self.mission.set_launch_vehicle(lv)
         # A new rocket may not reach the current destination: clear it
         dest = self.mission.destination
@@ -254,8 +268,14 @@ class OrbitLaunchScreen(Screen):
         m = self.mission
         for lv_id, card in self.lv_cards.items():
             lv = self.app.launch_vehicles[lv_id]
-            card.set_selected(m.launch_vehicle is not None and m.launch_vehicle.id == lv_id)
+            selected = m.launch_vehicle is not None and m.launch_vehicle.id == lv_id
+            card.set_selected(selected)
             badge = self.lv_fit[lv_id]
+            locked = not selected and not is_unlocked(self.app.profile, lv_id)
+            card.set_locked(locked)
+            if locked:
+                badge.set(f"🔒 {price_of(lv_id)} XP", "violet")
+                continue
             if m.orbit is None:
                 badge.set("Pick orbit", "neutral")
                 continue
@@ -356,11 +376,16 @@ class OrbitLaunchScreen(Screen):
         m = self.mission
         allowed = m.scenario.allowed_orbits
         for oid, card in self.orbit_cards.items():
-            card.set_selected(m.orbit is not None and m.orbit.id == oid)
+            selected = m.orbit is not None and m.orbit.id == oid
+            card.set_selected(selected)
             ok = not allowed or oid in allowed
-            card.set_locked(not ok)
-            self.orbit_badges[oid].set("Allowed" if ok else "Not in scenario",
-                                       "success" if ok else "neutral")
+            shop_locked = not selected and not is_unlocked(self.app.profile, oid)
+            card.set_locked(not ok or shop_locked)
+            if shop_locked:
+                self.orbit_badges[oid].set(f"🔒 {price_of(oid)} XP", "violet")
+            else:
+                self.orbit_badges[oid].set("Allowed" if ok else "Not in scenario",
+                                           "success" if ok else "neutral")
         if m.orbit is not None and m.orbit.id not in self._gmat_cache:
             self._fetch_gmat(m.orbit)      # e.g. after loading a saved design
         self._refresh_orbit_detail()

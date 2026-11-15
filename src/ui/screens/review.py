@@ -77,7 +77,7 @@ class ReviewScreen(Screen):
         self.issues = self._inner(card)
 
     def _build_manifest(self, parent) -> None:
-        card = self._card(parent, "Spacecraft manifest", T.VIOLET)
+        card = self._card(parent, "Spacecraft manifest", T.VIOLET_TEXT)
         self.manifest = self._inner(card)
 
     def _build_readiness(self, parent) -> None:
@@ -184,7 +184,7 @@ class ReviewScreen(Screen):
             return
         self.board.grid_columnconfigure(1, weight=1)
         for i, e in enumerate(entries):
-            rank_color = (T.WARNING, T.TEXT, "#D6A06A")[i] if i < 3 else T.TEXT_DIM
+            rank_color = (T.GOLD, T.SILVER, T.BRONZE)[i] if i < 3 else T.TEXT_DIM
             text(self.board, f"{i + 1}", (13, "bold"), rank_color, width=22).grid(
                 row=i, column=0, sticky="w", pady=3)
             text(self.board, e.get("mission_name", "?"), T.SMALL).grid(
