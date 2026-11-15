@@ -644,6 +644,11 @@ def _descendants(widget: tk.Misc, skip=(ctk.CTkButton, ctk.CTkEntry)):
     """Yield widget and all children, not descending into real controls
     (so a button inside a clickable card keeps its own click)."""
     yield widget
+    # CTkFrame hides its full-size background canvas from winfo_children(),
+    # but that canvas is what actually receives clicks on the frame's body.
+    canvas = getattr(widget, "_canvas", None)
+    if isinstance(widget, ctk.CTkFrame) and canvas is not None:
+        yield canvas
     for child in widget.winfo_children():
         if isinstance(child, skip):
             continue
