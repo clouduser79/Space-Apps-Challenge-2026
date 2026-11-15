@@ -1,5 +1,5 @@
 {
-  "comment": "TODO: populate with mission scenarios. Each entry needs: name, description, objective, budget_usd, mission_months, difficulty (cadet/engineer/expert), required_objectives, allowed_orbits, allowed_instruments, event_frequency_multiplier, sandbox_mode.",
+  "comment": "TODO: populate with mission scenarios. Each entry needs: name, description, objective, budget_usd, mission_months, difficulty (cadet/engineer/expert), required_objectives, allowed_orbits, allowed_instruments, event_frequency_multiplier, sandbox_mode. Optional unsuitable_instruments maps instrument id -> reason (soft warning on the Review screen). The destination follows from the chosen orbit (sandbox: picked by the player).",
   "scenarios": [
     {
       "id": "earth_observation",
@@ -13,7 +13,11 @@
       "allowed_orbits": ["sso", "leo"],
       "allowed_instruments": null,
       "event_frequency_multiplier": 1.0,
-      "sandbox_mode": false
+      "sandbox_mode": false,
+      "unsuitable_instruments": {
+        "sample_return": "there's nothing to collect from Earth orbit — it's 500 kg of dead weight",
+        "radar_sounder": "it's built to probe ice and rock on airless worlds, not to image a ground region every week"
+      }
     },
     {
       "id": "mars_recon",
@@ -27,7 +31,10 @@
       "allowed_orbits": ["lmo_mars"],
       "allowed_instruments": null,
       "event_frequency_multiplier": 1.5,
-      "sandbox_mode": false
+      "sandbox_mode": false,
+      "unsuitable_instruments": {
+        "sample_return": "this is an orbital survey — there's no lander to collect the samples"
+      }
     },
     {
       "id": "deep_space_weather",
@@ -41,7 +48,11 @@
       "allowed_orbits": ["l1"],
       "allowed_instruments": null,
       "event_frequency_multiplier": 2.0,
-      "sandbox_mode": false
+      "sandbox_mode": false,
+      "unsuitable_instruments": {
+        "sample_return": "L1 is empty space — there's no surface to collect samples from",
+        "radar_sounder": "there's no surface below L1 to sound"
+      }
     },
     {
       "id": "sandbox",

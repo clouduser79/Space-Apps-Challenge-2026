@@ -30,36 +30,62 @@ from src.game.save_load import save_result
 from src.game.scoring import ScoreEngine
 from src.ui import theme as T
 from src.ui.screens.base import Screen
-from src.ui.screens.launch_viewport import (FLIGHT_PHASES, FLIGHT_S, LOOPS, MissionViewport,
-                                            phase_at, phase_span)
+from src.ui.screens.launch_viewport import DEFAULT_PLAN, FlightPlan, MissionViewport
 from src.ui.telemetry import readiness
 from src.ui.widgets import (Badge, Card, Chip, ScrollFrame, SelectableCard, StatusRow,
                             eyebrow, ghost_button, glossary_text, primary_button, text)
 
-# One shared timeline (phase names and lengths live with the 3D viewport)
-PHASES = [name for name, _ in FLIGHT_PHASES]
+# One shared timeline per flight (FlightPlan, from the 3D viewport): its
+# phase names and lengths follow the mission type and length, and every
+# time below is a fraction of that same plan, so they always line up.
 RESULTS_DELAY_MS = 1600  # let the player see the landing before moving on
 
 
-def _at(index: int, share: float) -> float:
-    """Overall flight progress at `share` of the way through phase `index`."""
-    start, width = phase_span(index)
-    return start + share * width
+def event_times(plan: FlightPlan) -> tuple[float, float]:
+    """Mid-cruise, and mid-way through the orbits."""
+    return plan.at(1, 0.5), plan.at(2, 0.5)
 
 
-EVENT_AT = (_at(1, 0.5), _at(2, 0.5))   # mid-cruise, and mid-way through the orbits
-FAILURE_AT = _at(0, 0.5)                # matches the 3D explosion
+def failure_time(plan: FlightPlan) -> float:
+    """Matches the 3D explosion (half-way through Launch)."""
+    return plan.at(0, 0.5)
 
-# (flight progress, message, tone, icon, only if the launch succeeded)
-MILESTONES = [
-    (0.005, "Lift-off!", "accent", "🚀", False),
-    (_at(0, 0.6), "Booster separation — clean!", "accent", "✓", True),
-    (_at(2, 0.0), "Orbit insertion — you made it!", "success", "🪐", True),
-    (_at(2, 0.34), "Science data streaming home", "success", "📡", True),
-    (_at(2, 0.67), f"Final lap ({LOOPS} of {LOOPS})", "success", "↻", True),
-    (_at(3, 0.02), "Leaving orbit — heading home", "accent", "↩", True),
-    (0.995, "Touchdown — welcome home!", "success", "🌍", True),
-]
+
+def milestones_for(plan: FlightPlan) -> list[tuple]:
+    """(flight progress, message, tone, icon, only if the launch succeeded)"""
+    n = plan.loops
+    final = (n - 1) / n
+    if plan.kind == "l1":
+        arrive = ("Arrived at L1 — halo orbit locked in!", "☀️")
+        mid = "Solar wind data streaming home"
+        lap = f"Final halo loop ({n} of {n})"
+        leave = "Leaving L1 — heading home"
+    elif plan.kind == "earth":
+        arrive = ("Orbit insertion — you made it!", "🛰")
+        mid = "Images streaming down to the ground station"
+        lap = f"Final orbit ({n} of {n})"
+        leave = "Deorbit burn — coming home"
+    else:
+        arrive = ("Orbit insertion — you made it!", "🪐")
+        mid = "Science data streaming home"
+        lap = f"Final lap ({n} of {n})"
+        leave = "Leaving orbit — heading home"
+    return [
+        (0.005, "Lift-off!", "accent", "🚀", False),
+        (plan.at(0, 0.6), "Booster separation — clean!", "accent", "✓", True),
+        (plan.at(2, 0.0), arrive[0], "success", arrive[1], True),
+        (plan.at(2, min(0.34, final / 2)), mid, "success", "📡", True),
+        (plan.at(2, final), lap, "success", "↻", True),
+        (plan.at(3, 0.02), leave, "accent", "↩", True),
+        (0.995, "Touchdown — welcome home!", "success", "🌍", True),
+    ]
+
+
+# Defaults for an interplanetary flight of the reference length
+PHASES = DEFAULT_PLAN.names
+EVENT_AT = event_times(DEFAULT_PLAN)
+FAILURE_AT = failure_time(DEFAULT_PLAN)
+MILESTONES = milestones_for(DEFAULT_PLAN)
 
 
 class LaunchScreen(Screen):
@@ -81,6 +107,7 @@ class LaunchScreen(Screen):
         self._has_results = False   # a finished flight is shown below
         self._flight: dict = {}
         self._prompt = None
+        self.plan = DEFAULT_PLAN
         self._build_control()
         # Central 3D viewport: destination planet + Tharun's Rocket + minimap
         self.viewport = MissionViewport(self.body)
@@ -148,6 +175,12 @@ class LaunchScreen(Screen):
     def on_hide(self) -> None:
         self.viewport.stop()        # no 3D rendering while off-screen
 
+    def _set_plan(self, plan: FlightPlan) -> None:
+        """Use this flight plan for the tracker, milestones and events."""
+        self.plan = plan
+        for label, name in zip(self.phase_labels, plan.names):
+            label.configure(text=f"○  {name}", text_color=T.TEXT_DIM)
+
     def viewport_preview(self) -> None:
         if not self._running:
             self.viewport.preview_route()
@@ -157,6 +190,7 @@ class LaunchScreen(Screen):
             return
         m = self.mission
         self.viewport.set_mission(m)
+        self._set_plan(self.viewport.plan)
         if not self._has_results:
             self.viewport.abort()   # back to standby on the launch pad
         # After a flight, offer a way back to its results next to the preview
@@ -216,11 +250,13 @@ class LaunchScreen(Screen):
             return
         launch_ok, seed = box["pre"]
         cards = pick_events() if launch_ok else []
-        self._flight = dict(seed=seed, launch_ok=launch_ok, elapsed=0.0,
+        plan = self.plan
+        self._flight = dict(seed=seed, launch_ok=launch_ok, elapsed=0.0, plan=plan,
                             last=time.monotonic(), paused=False, index=-1,
-                            events=list(zip(EVENT_AT, cards)), effects=[], decisions=[],
-                            milestones=list(MILESTONES), failure_told=False)
-        self.viewport.play(FLIGHT_S, launch_ok)
+                            events=list(zip(event_times(plan), cards)), effects=[],
+                            decisions=[], milestones=milestones_for(plan),
+                            failure_at=failure_time(plan), failure_told=False)
+        self.viewport.play(plan.total, launch_ok)
         self._flight_tick()
 
     def _simulate(self, box: dict) -> None:
@@ -266,23 +302,25 @@ class LaunchScreen(Screen):
         if not f["paused"]:
             f["elapsed"] += now - f["last"]
         f["last"] = now
-        progress = min(1.0, f["elapsed"] / FLIGHT_S)
+        plan = f["plan"]
+        progress = min(1.0, f["elapsed"] / plan.total)
 
-        index = phase_at(progress)[0]
+        index = plan.phase_at(progress)[0]
         if index != f["index"]:
             f["index"] = index
+            names = plan.names
             for i, label in enumerate(self.phase_labels):
                 if i < index:
-                    label.configure(text=f"✓  {PHASES[i]}", text_color=T.SUCCESS)
+                    label.configure(text=f"✓  {names[i]}", text_color=T.SUCCESS)
                 elif i == index:
-                    label.configure(text=f"●  {PHASES[i]}", text_color=T.ACCENT)
+                    label.configure(text=f"●  {names[i]}", text_color=T.ACCENT)
         self.phase_bar.set(progress)
 
         while f["milestones"] and f["milestones"][0][0] <= progress:
             _at, message, tone, icon, needs_ok = f["milestones"].pop(0)
             if f["launch_ok"] or not needs_ok:
                 self.app.toast(message, tone, icon, 1700)
-        if not f["launch_ok"] and not f["failure_told"] and progress >= FAILURE_AT:
+        if not f["launch_ok"] and not f["failure_told"] and progress >= f["failure_at"]:
             f["failure_told"] = True
             self.app.toast("Launch failure — signal lost!", "danger", "💥", 2400)
 
@@ -314,7 +352,8 @@ class LaunchScreen(Screen):
         f = self._flight
         f["paused"] = True
         self.viewport.pause()
-        self._prompt = EventPrompt(self.body, card, self._choose)
+        phase = self.plan.names[1 if card.phase == "cruise" else 2]
+        self._prompt = EventPrompt(self.body, card, self._choose, phase)
         self._prompt.place(in_=self.viewport, relx=0.5, rely=0.5, anchor="center")
         self._prompt.lift()
 
@@ -332,8 +371,7 @@ class LaunchScreen(Screen):
 
     def _finish(self, status, notes, result, score, report) -> None:
         self.tracker.grid_remove()
-        for label, phase in zip(self.phase_labels, PHASES):
-            label.configure(text=f"○  {phase}", text_color=T.TEXT_DIM)
+        self._set_plan(self.plan)
         if status != "done":                # blocked / crashed: it never flew
             self._running = False
             self.viewport.abort()
@@ -399,11 +437,11 @@ class EventPrompt(Card):
 
     WIDTH = 600
 
-    def __init__(self, master, card: EventCard, on_choose) -> None:
+    def __init__(self, master, card: EventCard, on_choose, phase: str | None = None) -> None:
         super().__init__(master, fg_color=T.SURFACE, border_width=2,
                          border_color=T.WARNING, width=self.WIDTH)
         self.grid_columnconfigure((0, 1), weight=1, uniform="choice")
-        phase = "Cruise" if card.phase == "cruise" else "Operations"
+        phase = phase or ("Cruise" if card.phase == "cruise" else "Operations")
         eyebrow(self, f"⚠  Incoming event · {phase} · flight paused", T.WARNING).grid(
             row=0, column=0, columnspan=2, sticky="w", padx=T.PAD_LG, pady=(T.PAD_LG, 4))
         head = ctk.CTkFrame(self, fg_color="transparent")

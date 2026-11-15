@@ -1,9 +1,23 @@
 """3D mission viewport for the Launch screen.
 
-The scene holds two worlds: a textured Earth on the left — where Tharun's
-Rocket launches from and lands back on — and the destination (sized by its
-real diameter, with rings for Saturn) with its parking orbit. The rocket
-flies the whole mission in step with the simulation:
+The flight matches the mission type (`FlightPlan.kind`, from the
+destination — see planets.mission_kind):
+
+  interplanetary  Moon, Mars and sandbox worlds. Two worlds: a textured
+                  Earth on the left — where Tharun's Rocket launches from
+                  and lands back on — and the destination (sized by its
+                  real diameter, with rings for Saturn) with its parking
+                  orbit.
+  earth           Earth-orbit missions (LEO, SSO, GEO): lift off, climb
+                  into the mission orbit around Earth, three laps, then a
+                  deorbit burn and a landing on Earth.
+  l1              Sun–Earth L1: Earth on the right, the L1 point marked on
+                  the Sun–Earth line to its left (sunward); cruise out, hold
+                  station on a small halo loop, return.
+
+Every kind uses the same four phases (only their labels and lengths
+differ), so the rocket flies the whole mission in step with the
+simulation:
 
   Standby     rocket stands on Earth; the planned paths are dashed
   Launch      engines + boosters fire, rocket lifts off and pitches over,
@@ -15,10 +29,12 @@ flies the whole mission in step with the simulation:
               the outbound path and lands on Earth — then disappears
 
 Paths are cubic Bezier curves whose end directions match the orbit and the
-Earth's surface, so every hand-off is smooth (no corners). One function,
-`flight_info(progress)`, turns overall flight progress into phase and path
-parameters; the 3D view, the 2D map and the Launch screen all use it, so
-they can never disagree about where the rocket is.
+Earth's surface, so every hand-off is smooth (no corners). One method,
+`FlightPlan.info(progress)`, turns overall flight progress into phase and
+path parameters; the 3D view, the 2D map and the Launch screen all use the
+same plan, so they can never disagree about where the rocket is. The
+plan's length scales gently with the scenario's mission_months (clamped
+to MIN_FLIGHT_S..MAX_FLIGHT_S).
 
 The camera frames Earth, the planet, the orbit and both paths with a
 margin, for whatever size the pane is. Drag to orbit the camera;
@@ -29,6 +45,7 @@ from __future__ import annotations
 
 import math
 import random
+from dataclasses import dataclass
 from functools import lru_cache
 import time
 import tkinter as tk
@@ -36,7 +53,7 @@ import tkinter.font as tkfont
 
 import customtkinter as ctk
 
-from src.game.planets import EARTH
+from src.game.planets import EARTH, mission_kind
 from src.ui import assets
 from src.ui import planet_render as P
 from src.ui import theme as T
@@ -56,47 +73,126 @@ DEFAULT_PITCH = 0.24
 # --------------------------------------------------------------------------
 # Shared flight timeline (3D view, 2D map and Launch screen all use these)
 # --------------------------------------------------------------------------
-FLIGHT_PHASES = (("Launch", 1.4), ("Cruise", 2.4), ("Operations", 4.5), ("Return", 2.6))
-FLIGHT_S = sum(seconds for _, seconds in FLIGHT_PHASES)
-LOOPS = 3                       # laps of the planet before heading home
 LAUNCH_SHARE = 0.15             # share of the outbound arc flown during Launch
 _PHASE_KEYS = ("launch", "cruise", "ops", "return")
 
+# Per mission kind: (phase label, seconds at the reference mission length)
+# and laps of the orbit before heading home.
+BASE_PHASES = {
+    "interplanetary": (("Launch", 1.4), ("Cruise", 2.4), ("Operations", 4.5),
+                       ("Return", 2.6)),
+    "l1": (("Launch", 1.4), ("Cruise", 2.0), ("Station-keeping", 4.5), ("Return", 2.2)),
+    "earth": (("Launch", 1.4), ("Ascent", 1.0), ("Operations", 4.5), ("Deorbit", 1.8)),
+}
+LOOPS_FOR = {"interplanetary": 3, "l1": 2, "earth": 3}
+REFERENCE_MONTHS = 24           # mission length the base timings are for
+MIN_FLIGHT_S, MAX_FLIGHT_S = 8.0, 16.0
+
+
+def ops_scale(months: float) -> float:
+    """Operations-phase stretch for a mission length: gentle (a fifth root
+    -ish curve) and clamped, so 12 months is a bit shorter than 24 and
+    120 months is under twice as long."""
+    k = (max(1.0, months) / REFERENCE_MONTHS) ** 0.35
+    return max(0.75, min(1.8, k))
+
+
+@dataclass(frozen=True)
+class FlightPlan:
+    """One flight's timeline: phases (label, seconds) and laps in orbit."""
+
+    kind: str
+    phases: tuple
+    loops: int
+
+    @property
+    def names(self) -> list[str]:
+        return [name for name, _ in self.phases]
+
+    @property
+    def total(self) -> float:
+        return sum(seconds for _, seconds in self.phases)
+
+    def span(self, index: int) -> tuple[float, float]:
+        """(start, width) of a phase as fractions of the whole flight."""
+        start = sum(sec for _, sec in self.phases[:index]) / self.total
+        return start, self.phases[index][1] / self.total
+
+    def at(self, index: int, share: float) -> float:
+        """Overall progress `share` of the way through phase `index`."""
+        start, width = self.span(index)
+        return start + share * width
+
+    def phase_at(self, progress: float) -> tuple[int, float]:
+        """(phase index, progress within that phase) for overall progress 0..1."""
+        progress = max(0.0, min(1.0, progress))
+        last = len(self.phases) - 1
+        for i in range(len(self.phases)):
+            start, width = self.span(i)
+            if progress < start + width or i == last:
+                return i, max(0.0, min(1.0, (progress - start) / width))
+        return last, 1.0
+
+    def info(self, progress: float) -> dict:
+        """Everything both views need to place the rocket at `progress`:
+        phase, u (progress within the phase), curve (outbound arc 0..1),
+        orbit_angle (radians travelled in orbit), ret (return arc 0..1)."""
+        index, u = self.phase_at(progress)
+        loops = self.loops
+        info = {"phase": _PHASE_KEYS[index], "index": index, "u": u,
+                "curve": 1.0, "orbit_angle": 0.0, "ret": 0.0, "kind": self.kind}
+        if index == 0:
+            info["curve"] = LAUNCH_SHARE * u * u
+        elif index == 1:
+            info["curve"] = LAUNCH_SHARE + (1 - LAUNCH_SHARE) * _smooth(u)
+        elif index == 2:
+            info["orbit_angle"] = u * loops * 2 * math.pi
+            info["lap"] = min(loops, int(u * loops) + 1)
+        else:
+            info["orbit_angle"] = loops * 2 * math.pi
+            info["ret"] = u
+        return info
+
+
+def flight_plan(kind: str = "interplanetary", months: float = REFERENCE_MONTHS) -> FlightPlan:
+    """Timeline for a mission kind, with operations stretched by
+    `ops_scale(months)` and the whole flight clamped to
+    MIN_FLIGHT_S..MAX_FLIGHT_S."""
+    base = BASE_PHASES.get(kind, BASE_PHASES["interplanetary"])
+    k = ops_scale(months)
+    phases = [(name, sec * k if i == 2 else sec) for i, (name, sec) in enumerate(base)]
+    total = sum(sec for _, sec in phases)
+    fit = max(MIN_FLIGHT_S, min(MAX_FLIGHT_S, total)) / total
+    return FlightPlan(kind, tuple((name, round(sec * fit, 3)) for name, sec in phases),
+                      LOOPS_FOR.get(kind, 3))
+
+
+def plan_for(mission) -> FlightPlan:
+    """The flight plan for a mission: kind from its destination, length
+    from its scenario."""
+    if mission is None:
+        return flight_plan("earth")
+    return flight_plan(mission_kind(mission.destination), mission.scenario.mission_months)
+
+
+# Defaults (an interplanetary flight of the reference length), kept for
+# callers that don't have a mission at hand.
+DEFAULT_PLAN = flight_plan()
+FLIGHT_PHASES = DEFAULT_PLAN.phases
+FLIGHT_S = DEFAULT_PLAN.total
+LOOPS = DEFAULT_PLAN.loops
+
 
 def phase_span(index: int) -> tuple[float, float]:
-    """(start, width) of a phase as fractions of the whole flight."""
-    start = sum(sec for _, sec in FLIGHT_PHASES[:index]) / FLIGHT_S
-    return start, FLIGHT_PHASES[index][1] / FLIGHT_S
+    return DEFAULT_PLAN.span(index)
 
 
 def phase_at(progress: float) -> tuple[int, float]:
-    """(phase index, progress within that phase) for overall progress 0..1."""
-    progress = max(0.0, min(1.0, progress))
-    for i in range(len(FLIGHT_PHASES)):
-        start, width = phase_span(i)
-        if progress < start + width or i == len(FLIGHT_PHASES) - 1:
-            return i, max(0.0, min(1.0, (progress - start) / width))
-    return len(FLIGHT_PHASES) - 1, 1.0
+    return DEFAULT_PLAN.phase_at(progress)
 
 
 def flight_info(progress: float) -> dict:
-    """Everything both views need to place the rocket at `progress`:
-    phase, u (progress within the phase), curve (outbound arc 0..1),
-    orbit_angle (radians travelled in orbit), ret (return arc 0..1)."""
-    index, u = phase_at(progress)
-    info = {"phase": _PHASE_KEYS[index], "index": index, "u": u,
-            "curve": 1.0, "orbit_angle": 0.0, "ret": 0.0}
-    if index == 0:
-        info["curve"] = LAUNCH_SHARE * u * u
-    elif index == 1:
-        info["curve"] = LAUNCH_SHARE + (1 - LAUNCH_SHARE) * _smooth(u)
-    elif index == 2:
-        info["orbit_angle"] = u * LOOPS * 2 * math.pi
-        info["lap"] = min(LOOPS, int(u * LOOPS) + 1)
-    else:
-        info["orbit_angle"] = LOOPS * 2 * math.pi
-        info["ret"] = u
-    return info
+    return DEFAULT_PLAN.info(progress)
 
 
 # --------------------------------------------------------------------------
@@ -109,6 +205,8 @@ def _rgb(hex_colour: str) -> tuple[int, int, int]:
 
 ACCENT, ORBIT, OUTBOUND = _rgb(T.ACCENT), _rgb(T.ORBIT_RING), _rgb(T.OUTBOUND)
 RETURN_RGB = _rgb(T.RETURN)
+L1_RGB = _rgb(T.SUN)
+SUNLINE_RGB = tuple(int(v * 0.55) for v in _rgb(T.SUN))
 
 
 def _smooth(t: float) -> float:
@@ -225,10 +323,11 @@ class MissionViewport(ctk.CTkFrame):
 
         self.mission = None
         self.dest = EARTH
+        self.plan = plan_for(None)
         self.mode = "idle"            # idle | flight | home | lost
         self.launch_ok = True
         self.flight_start = 0.0
-        self.flight_len = FLIGHT_S
+        self.flight_len = self.plan.total
         self.particles: list[list] = []
         self._exploded = False
         self._after = None
@@ -240,7 +339,8 @@ class MissionViewport(ctk.CTkFrame):
         self._hud_text: dict[str, str] = {}      # live readouts, shown on the map pane
         self._status_colour = T.TEXT_MUTED
         self._halos: list[tuple[int, str, float]] = []
-        self._scene_key = (EARTH.id, None)
+        self._labels: list[tuple[int, tuple, float]] = []   # (item, 3D point, dy px)
+        self._scene_key = (EARTH.id, None, self.plan)
         self.target = (0.0, 0.0, 0.0)
         self.dist = 20.0
         self._configure_scene()
@@ -258,14 +358,22 @@ class MissionViewport(ctk.CTkFrame):
     # ==================================================================
     def set_mission(self, mission) -> None:
         dest = (mission.destination if mission and mission.destination else EARTH)
-        key = (dest.id, mission.orbit.id if mission and mission.orbit else None)
+        plan = plan_for(mission)
+        orbit = mission.orbit if mission else None
+        key = (dest.id, orbit.id if orbit else None, plan)
         self.mission = mission
-        if key != self._scene_key:          # new destination or orbit
+        if key != self._scene_key:          # new destination, orbit or timeline
             self._scene_key = key
             self.dest = dest
+            self.plan = plan
+            self.flight_len = plan.total
             self._configure_scene()
             self._draw_static()
-            self.map.set_destination(dest)
+            self.map.set_scene(dest, plan, orbit)
+
+    @property
+    def kind(self) -> str:
+        return self.plan.kind
 
     def start(self) -> None:
         if not self._running:
@@ -341,25 +449,73 @@ class MissionViewport(ctk.CTkFrame):
     # ==================================================================
     def _configure_scene(self) -> None:
         d = self.dest
-        # Destination at the origin, with its orbit
-        self.R = P.radius_for(d)
-        self.tilt = math.radians(P.AXIAL_TILT.get(d.id, 0.0))
-        self.ring = P.ring_mesh(d.id)
-        self.ring_r = self.R * P.ring_outer(d.id) if self.ring else 0.0
-        self.orbit_r = max(self.R * 1.4 + 0.5, self.ring_r * 1.12)
-        orbit = self.mission.orbit if self.mission else None
-        incl = orbit.inclination_deg if orbit else 28.0
-        self.orbit_rot = matmul(rot_z(self.tilt * 0.35), rot_x(math.radians(min(incl, 80.0))))
-
-        # Earth to the left, far enough out for the transfer arcs to read
+        kind = self.kind
         self.R_e = P.radius_for(EARTH)
-        self.earth = (-(self.orbit_r + 3.4 + 1.6 * self.R_e), -0.25 * self.R_e, 0.0)
         self.earth_tilt = math.radians(P.AXIAL_TILT["earth"])
         self.rocket_scale = 0.22 * self.R_e
+        orbit = self.mission.orbit if self.mission else None
+        incl = orbit.inclination_deg if orbit else 28.0
+        self.sun_end = None                     # end of the Sun–Earth line (L1 only)
+        if kind == "l1":
+            # A marked point (no world) circled by a small halo loop that
+            # runs across the Sun–Earth line, tilted toward the camera
+            self.R = 0.16 * self.R_e
+            self.tilt, self.ring, self.ring_r = 0.0, None, 0.0
+            self.orbit_r = 0.62 * self.R_e
+            self.orbit_rot = matmul(rot_y(-0.6), rot_z(math.pi / 2))
+        else:
+            # Destination (Earth itself for Earth-orbit missions) at the
+            # origin, with its orbit
+            self.R = P.radius_for(d)
+            self.tilt = math.radians(P.AXIAL_TILT.get(d.id, 0.0))
+            self.ring = P.ring_mesh(d.id)
+            self.ring_r = self.R * P.ring_outer(d.id) if self.ring else 0.0
+            grow = 1.6 if kind == "earth" else 1.4
+            self.orbit_r = max(self.R * grow + 0.5, self.ring_r * 1.12)
+            self.orbit_rot = matmul(rot_z(self.tilt * 0.35),
+                                    rot_x(math.radians(min(incl, 80.0))))
+        if kind == "earth":
+            self._configure_earth_orbit()
+        else:
+            self._configure_transfer()
+        self.alt_km, self.v_orbit = self._orbit_numbers()
+        self._fit_camera()
 
-        # Launch from Earth's upper-right, land on its lower-right
-        self.n_launch = normalize((0.8, 0.55, 0.25))
-        self.n_land = normalize((0.8, -0.55, 0.25))
+    def _configure_earth_orbit(self) -> None:
+        """Earth-orbit mission: Earth at the origin. The rocket launches
+        from a pad beneath the orbit, climbs into it at the point facing
+        the camera (moving left to right), flies its laps and deorbits to a
+        landing site a little further along the ground track."""
+        self.earth = (0.0, 0.0, 0.0)
+        front = normalize((0.0, 0.55, 0.85))
+        self.theta0 = max((2 * math.pi * k / 120 for k in range(120)),
+                          key=lambda th: sum(a * b for a, b in zip(self._orbit_pos(th), front)))
+        self.orbit_dir = 1 if self._orbit_tangent(self.theta0, 1)[0] >= 0 else -1
+        self.n_launch = normalize(self._orbit_pos(self.theta0 - self.orbit_dir * 0.85))
+        self.n_land = normalize(self._orbit_pos(self.theta0 + self.orbit_dir * 0.85))
+        half = 1.2 * self.rocket_scale
+        self.pad_pos = mul(self.n_launch, self.R_e + half)
+        self.land_pos = mul(self.n_land, self.R_e + half * 0.6)
+        p_ins = self._orbit_pos(self.theta0)
+        t_ins = self._orbit_tangent(self.theta0)
+        self.outbound = tuple(map(tuple, smooth_arc(self.pad_pos, self.n_launch, p_ins, t_ins,
+                                                    pull=0.5)))
+        self.homeward = tuple(map(tuple, smooth_arc(p_ins, t_ins, self.land_pos,
+                                                    mul(self.n_land, -1), pull=0.5)))
+
+    def _configure_transfer(self) -> None:
+        """Interplanetary (Earth on the left) or L1 (Earth on the right,
+        the Sun off beyond the left edge)."""
+        # Earth far enough out for the transfer arcs to read
+        side = 1 if self.kind == "l1" else -1
+        self.earth = (side * (self.orbit_r + 3.4 + 1.6 * self.R_e), -0.25 * self.R_e, 0.0)
+        if self.kind == "l1":
+            sunward = normalize(sub((0.0, 0.0, 0.0), self.earth))
+            self.sun_end = mul(sunward, self.orbit_r + 2.2 * self.R_e)
+
+        # Launch from Earth's upper side facing the target, land on its lower side
+        self.n_launch = normalize((-side * 0.8, 0.55, 0.25))
+        self.n_land = normalize((-side * 0.8, -0.55, 0.25))
         half = 1.2 * self.rocket_scale                # rocket centre sits this far up
         self.pad_pos = add(self.earth, mul(self.n_launch, self.R_e + half))
         self.land_pos = add(self.earth, mul(self.n_land, self.R_e + half * 0.6))
@@ -379,16 +535,17 @@ class MissionViewport(ctk.CTkFrame):
                                                     end_cap=cap)))
         self.homeward = tuple(map(tuple, smooth_arc(p_ins, t_ins, self.land_pos,
                                                     mul(self.n_land, -1), start_cap=cap)))
-        self.alt_km, self.v_orbit = self._orbit_numbers()
-        self._fit_camera()
 
     def _orbit_numbers(self) -> tuple[float, float | None]:
         """Altitude: the mission orbit if it circles this world, else a
-        400 km parking orbit. Speed: real circular velocity sqrt(GM/r)."""
+        400 km parking orbit. Speed: real circular velocity sqrt(GM/r)
+        (none for the L1 halo loop, which isn't an orbit of a body)."""
         orbit = self.mission.orbit if self.mission else None
         alt = 400.0
         if orbit and orbit.body.lower() == self.dest.name.lower():
             alt = orbit.altitude_km
+        if self.kind == "l1":
+            return alt, None
         return alt, P.orbital_speed_km_s(self.dest, alt)
 
     def _orbit_pos(self, theta: float):
@@ -409,6 +566,8 @@ class MissionViewport(ctk.CTkFrame):
         rocket_pad = 1.4 * self.rocket_scale
         pts = [(self.earth, self.R_e * 1.12),
                ((0.0, 0.0, 0.0), max(self.R * 1.08, self.ring_r * 1.02))]
+        if self.sun_end is not None:                    # Sun–Earth line + its label
+            pts.append((self.sun_end, 0.5 * self.R_e))
         pts += [(self._orbit_pos(2 * math.pi * k / 48), rocket_pad) for k in range(48)]
         for arc in (self.outbound, self.homeward):
             pts += [(along(arc, i / 32)[0], rocket_pad) for i in range(33)]
@@ -478,12 +637,12 @@ class MissionViewport(ctk.CTkFrame):
 
         # --- the two worlds -----------------------------------------------------
         spin = clock * 0.12
-        instances = [
-            Instance(P.planet_mesh(self.dest.id), matmul(rot_z(self.tilt), rot_y(spin)),
-                     scale=self.R),
-            Instance(P.planet_mesh("earth"), matmul(rot_z(self.earth_tilt), rot_y(spin * 1.4)),
-                     self.earth, self.R_e),
-        ]
+        instances = [Instance(P.planet_mesh("earth"),
+                              matmul(rot_z(self.earth_tilt), rot_y(spin * 1.4)),
+                              self.earth, self.R_e)]
+        if self.kind == "interplanetary":
+            instances.append(Instance(P.planet_mesh(self.dest.id),
+                                      matmul(rot_z(self.tilt), rot_y(spin)), scale=self.R))
         if self.ring is not None:
             instances.append(Instance(self.ring, rot_z(self.tilt), scale=self.R))
 
@@ -500,6 +659,8 @@ class MissionViewport(ctk.CTkFrame):
         for k in range(0, n, 2):
             a, b = self._orbit_pos(2 * math.pi * k / n), self._orbit_pos(2 * math.pi * (k + 1) / n)
             segments.append((a, b, ORBIT, 1.4))
+        if self.kind == "l1":
+            segments += self._l1_marker()
         flying = self.mode in ("idle", "flight") and info["phase"] not in ("lost", "home")
         if flying and info["phase"] in ("standby", "launch", "cruise"):
             segments += self._dashed_arc(self.outbound, info["curve"], OUTBOUND)
@@ -534,6 +695,20 @@ class MissionViewport(ctk.CTkFrame):
         self._update_hud(info, heading)
         self.map.update_marker(info, standby=self.mode == "idle")
 
+    def _l1_marker(self) -> list:
+        """The L1 point: a diamond facing the camera, plus the dashed
+        Sun–Earth line it sits on."""
+        right, up, _forward = self.camera.basis()
+        r = self.R
+        tips = [mul(right, r), mul(up, r), mul(right, -r), mul(up, -r)]
+        out = [(tips[i], tips[(i + 1) % 4], L1_RGB, 2.4) for i in range(4)]
+        out.append((mul(right, -0.35 * r), mul(right, 0.35 * r), L1_RGB, 2.0))
+        steps = 30
+        a, b = self.earth, self.sun_end
+        for k in range(0, steps, 2):
+            out.append((lerp(a, b, k / steps), lerp(a, b, (k + 1) / steps), SUNLINE_RGB, 1.0))
+        return out
+
     @staticmethod
     def _dashed_arc(arc, start: float, colour, steps: int = 44):
         """Dashed remainder of a planned path, from `start` to its end."""
@@ -557,12 +732,14 @@ class MissionViewport(ctk.CTkFrame):
             return None, self.n_land, None, {"phase": "home", "curve": 1.0, "ret": 1.0}
 
         tau = _clamp01((now - self.flight_start) / self.flight_len)
-        info = flight_info(tau)
+        info = self.plan.info(tau)
         phase, u = info["phase"], info["u"]
+        earth_orbit = self.kind == "earth"
         if phase == "launch":
             pos, tangent = along(self.outbound, info["curve"])
             heading = normalize(lerp(self.n_launch, normalize(tangent), _smooth(u)))
-            info.update(speed=11.2 * _smooth(u), alt=200.0 * u * u)
+            top_speed = (self.v_orbit or 7.8) if earth_orbit else 11.2
+            info.update(speed=top_speed * _smooth(u), alt=min(200.0, self.alt_km) * u * u)
             if not self.launch_ok and u >= 0.5:
                 if not self._exploded:
                     self._explode(pos)
@@ -576,8 +753,11 @@ class MissionViewport(ctk.CTkFrame):
             return None, self.n_launch, None, {"phase": "lost", "curve": 0.0, "ret": 0.0}
         if phase == "cruise":
             c = info["curve"]
-            info["range"] = self.dest.distance_from_earth_km * (1 - (c - LAUNCH_SHARE)
-                                                                / (1 - LAUNCH_SHARE))
+            k = (c - LAUNCH_SHARE) / (1 - LAUNCH_SHARE)
+            if earth_orbit:                       # climbing to the mission altitude
+                start = min(200.0, self.alt_km)
+                info["alt"] = start + (self.alt_km - start) * k
+            info["range"] = self.dest.distance_from_earth_km * (1 - k)
             state = RocketState(boosters=1.0, arrays=_clamp01((u - 0.1) / 0.4),
                                 dish=_clamp01((u - 0.45) / 0.4),
                                 flame=0.5 if u > 0.88 else 0.0, flicker=flicker)
@@ -589,7 +769,8 @@ class MissionViewport(ctk.CTkFrame):
             return self._orbit_pos(theta), normalize(self._orbit_tangent(theta)), deployed, info
         # Return: along the homeward arc; the rocket vanishes as it lands
         t = info["ret"]
-        info["range"] = self.dest.distance_from_earth_km * (1 - t)
+        info["range"] = (self.alt_km if earth_orbit
+                         else self.dest.distance_from_earth_km) * (1 - t)
         if t >= 0.995:
             return None, self.n_land, None, info
         deployed.flame = 0.6 if t < 0.12 else 0.0                    # escape burn
@@ -624,7 +805,7 @@ class MissionViewport(ctk.CTkFrame):
         draw_stars(c, w, h, count=max(80, w * h // 2200), seed=5, tag="star")
         self._halos = []
         bg = _rgb(T.BG)
-        for body in ("earth", self.dest.id):
+        for body in dict.fromkeys(("earth", self.dest.id)):
             colour = P.HALO.get(body)
             if not colour:
                 continue
@@ -635,20 +816,54 @@ class MissionViewport(ctk.CTkFrame):
                 self._halos.append((item, body, grow))
         c.tag_lower("halo")
         c.tag_lower("star")
+        c.delete("label3d")
+        self._labels = []
+        if self.kind == "l1":
+            f = T.canvas_font(10, bold=True)
+            self._labels.append((c.create_text(0, 0, text="L1", fill=T.SUN, font=f,
+                                               tags="label3d"), (0.0, 0.0, 0.0), -16.0))
+            self._labels.append((c.create_text(0, 0, text="TO THE SUN", fill=T.TEXT_DIM,
+                                               font=T.canvas_font(9, bold=True),
+                                               tags="label3d"), self.sun_end, -12.0))
         c.create_text(w - 22, h - 16, anchor="se", fill=T.TEXT_DIM, tags="hud",
                       width=max(100, w - 44), font=T.canvas_font(10),
                       text="Drag to rotate  ·  double-click to reset")
         c.tag_raise("hud")
 
+    def _project(self, point):
+        """Screen (x, y, depth) of a scene point for the current camera."""
+        c = self.canvas
+        w, h = c.winfo_width(), c.winfo_height()
+        right, up, forward = self.camera.basis()
+        focal = (h / 2) / math.tan(math.radians(FOV) / 2)
+        d = sub(point, self.camera.position)
+        z = d[0] * forward[0] + d[1] * forward[1] + d[2] * forward[2]
+        if z <= 1e-6:
+            return None
+        return (w / 2 + focal * (d[0] * right[0] + d[1] * right[1] + d[2] * right[2]) / z,
+                h / 2 - focal * (d[0] * up[0] + d[1] * up[1] + d[2] * up[2]) / z, z)
+
+    def _update_labels(self) -> None:
+        """Keep the 3D scene's text labels on their points."""
+        for item, point, dy in self._labels:
+            spot = self._project(point)
+            if spot is None:
+                self.canvas.itemconfigure(item, state="hidden")
+                continue
+            self.canvas.coords(item, spot[0], spot[1] + dy)
+            self.canvas.itemconfigure(item, state="normal")
+            self.canvas.tag_raise(item)
+
     def _update_halos(self) -> None:
         """Keep each atmosphere glow centred on its (moving) planet."""
+        self._update_labels()
         if not self._halos:
             return
         c = self.canvas
         w, h = c.winfo_width(), c.winfo_height()
         right, up, forward = self.camera.basis()
         focal = (h / 2) / math.tan(math.radians(FOV) / 2)
-        spheres = {"earth": (self.earth, self.R_e), self.dest.id: ((0.0, 0.0, 0.0), self.R)}
+        spheres = {self.dest.id: ((0.0, 0.0, 0.0), self.R), "earth": (self.earth, self.R_e)}
         placed = {}
         for body, (centre, radius) in spheres.items():
             d = sub(centre, self.camera.position)
@@ -678,22 +893,36 @@ class MissionViewport(ctk.CTkFrame):
         self._update_hud_text(info, heading)
         self.map.set_readouts(self._hud_text, self._status_colour)
 
-    def _update_hud_text(self, info: dict, heading) -> None:
-        phase = info["phase"]
-        u = info.get("u", 0.0)
-        status = {
+    def _status(self, phase: str, u: float, lap: int) -> tuple[str, str]:
+        """Status line (text, colour) for a phase, worded for the mission kind."""
+        kind, loops = self.kind, self.plan.loops
+        if phase == "cruise":
+            lead = {"earth": "ASCENT", "l1": "CRUISE TO L1"}.get(kind, "CRUISE")
+            last = {"l1": "HALO ORBIT INSERTION"}.get(kind, "ORBIT INSERTION BURN")
+            return (f"{lead} — deploying solar arrays" if u < 0.45
+                    else f"{lead} — unfurling comms dish" if u < 0.88 else last), T.ACCENT
+        if phase == "ops":
+            if kind == "l1":
+                return f"STATION-KEEPING AT L1 — loop {lap}/{loops}", T.SUCCESS
+            return f"SCIENCE OPERATIONS — orbit {lap}/{loops}", T.SUCCESS
+        if phase == "return":
+            if kind == "earth":
+                return ("DEORBIT BURN" if u < 0.12
+                        else "RE-ENTRY — descending to the landing site"), T.ACCENT
+            return ("LEAVING L1" if kind == "l1" else "DEPARTING ORBIT") if u < 0.12 \
+                else "RETURN CRUISE — heading home", T.ACCENT
+        return {
             "standby": ("STANDBY — awaiting launch", T.TEXT_MUTED),
             "launch": ("LIFT-OFF — boosters firing" if u < 0.55 else "BOOSTER SEPARATION",
                        T.WARNING),
-            "cruise": ("CRUISE — deploying solar arrays" if u < 0.45
-                       else "CRUISE — unfurling comms dish" if u < 0.88
-                       else "ORBIT INSERTION BURN", T.ACCENT),
-            "ops": (f"SCIENCE OPERATIONS — orbit {info.get('lap', 1)}/{LOOPS}", T.SUCCESS),
-            "return": ("DEPARTING ORBIT" if u < 0.12 else "RETURN CRUISE — heading home",
-                       T.ACCENT),
             "home": ("BACK ON EARTH — mission complete", T.SUCCESS),
             "lost": ("LOSS OF SIGNAL — launch failure", T.DANGER),
         }[phase]
+
+    def _update_hud_text(self, info: dict, heading) -> None:
+        phase = info["phase"]
+        u = info.get("u", 0.0)
+        status = self._status(phase, u, info.get("lap", 1))
         self._set("status", status[0], status[1])
         if phase in ("lost", "home"):
             for key in ("vector", "range", "speed", "deploy"):
@@ -702,8 +931,10 @@ class MissionViewport(ctk.CTkFrame):
         az = math.degrees(math.atan2(heading[0], heading[2])) % 360
         el = math.degrees(math.asin(max(-1.0, min(1.0, heading[1]))))
         self._set("vector", f"APPROACH VECTOR  az {az:5.1f}°   el {el:+5.1f}°")
+        earth_orbit = self.kind == "earth"
         if phase == "standby":
-            self._set("range", f"RANGE           {_km(self.dest.distance_from_earth_km)}")
+            self._set("range", f"TARGET ALTITUDE {self.alt_km:,.0f} km" if earth_orbit
+                      else f"RANGE           {_km(self.dest.distance_from_earth_km)}")
             self._set("speed", "SPEED           0.0 km/s")
             self._set("deploy", "ARRAYS STOWED · DISH STOWED")
         elif phase == "launch":
@@ -711,15 +942,27 @@ class MissionViewport(ctk.CTkFrame):
             self._set("speed", f"SPEED           {info['speed']:.1f} km/s")
             self._set("deploy", "ARRAYS STOWED · DISH STOWED")
         elif phase == "cruise":
-            self._set("range", f"RANGE           {_km(max(0.0, info['range']))}")
-            self._set("speed", "SPEED           coasting")
+            if earth_orbit:
+                self._set("range", f"ALTITUDE        {info['alt']:,.0f} km")
+                self._set("speed", "SPEED           climbing")
+            else:
+                self._set("range", f"RANGE           {_km(max(0.0, info['range']))}")
+                self._set("speed", "SPEED           coasting")
             arrays, dish = _clamp01((u - 0.1) / 0.4), _clamp01((u - 0.45) / 0.4)
             self._set("deploy", f"ARRAYS {arrays:4.0%} · DISH {dish:4.0%}")
         elif phase == "return":
-            self._set("range", f"RANGE TO EARTH  {_km(max(0.0, info['range']))}")
-            self._set("speed", "SPEED           escape burn" if u < 0.12
-                      else "SPEED           coasting")
+            if earth_orbit:
+                self._set("range", f"ALTITUDE        {max(0.0, info['range']):,.0f} km")
+                self._set("speed", "SPEED           deorbit burn" if u < 0.12
+                          else "SPEED           re-entry")
+            else:
+                self._set("range", f"RANGE TO EARTH  {_km(max(0.0, info['range']))}")
+                self._set("speed", "SPEED           escape burn" if u < 0.12
+                          else "SPEED           coasting")
             self._set("deploy", "ARRAYS 100% · DISH 100%")
+        elif self.kind == "l1":
+            self._set("range", f"RANGE TO EARTH  {_km(self.dest.distance_from_earth_km)}")
+            self._set("speed", "SPEED           holding station")
         else:
             self._set("range", f"ALTITUDE        {self.alt_km:,.0f} km")
             speed = f"{self.v_orbit:.2f} km/s" if self.v_orbit else "—"
@@ -755,25 +998,36 @@ READOUT_KEYS = ("vector", "range", "speed", "deploy")
 READOUT_TEMPLATES = {
     "vector": ("APPROACH VECTOR  az 360.0°   el +90.0°",),
     "range": ("RANGE           999.99M km", "ALTITUDE        99,999 km",
-              "RANGE TO EARTH  999.99M km"),
-    "speed": ("ORBITAL SPEED   42.45 km/s", "SPEED           coasting"),
+              "RANGE TO EARTH  999.99M km", "TARGET ALTITUDE 99,999 km"),
+    "speed": ("ORBITAL SPEED   42.45 km/s", "SPEED           coasting",
+              "SPEED           holding station"),
     "deploy": ("ARRAYS STOWED · DISH STOWED", "ARRAYS 100% · DISH 100%"),
 }
 STATUS_TEMPLATES = ("STANDBY — awaiting launch", "LIFT-OFF — boosters firing",
                     "CRUISE — deploying solar arrays", "CRUISE — unfurling comms dish",
                     "SCIENCE OPERATIONS — orbit 3/3", "LOSS OF SIGNAL — launch failure",
-                    "RETURN CRUISE — heading home", "BACK ON EARTH — mission complete")
+                    "RETURN CRUISE — heading home", "BACK ON EARTH — mission complete",
+                    "CRUISE TO L1 — deploying solar arrays", "STATION-KEEPING AT L1 — loop 3/3",
+                    "RE-ENTRY — descending to the landing site")
 
 
 class TransferMap(tk.Canvas):
-    """Sun -> Earth -> destination transfer map with the live readouts.
+    """2D map of the flight with the live readouts, one layout per kind:
 
-    Same flight as the 3D view, drawn the same way: launch from Earth's
-    upper right, a smooth arc into the parking orbit (arriving downward,
-    along the orbit), three laps, then a smooth arc home underneath that
-    lands on Earth's lower right. The marker is placed by the shared
-    `flight_info`, so it is always at the same point of the trip as the
-    3D rocket.
+      interplanetary  Sun -> Earth -> destination. Launch from Earth's upper
+                      right, a smooth arc into the parking orbit (arriving
+                      downward, along the orbit), the laps, then a smooth arc
+                      home underneath that lands on Earth's lower right.
+      l1              Sun <- L1 <- Earth (schematic, not to scale): the
+                      mirror image — Earth on the right, out to the halo loop
+                      on the Sun–Earth line, back underneath.
+      earth           Earth with the mission orbit around it: lift off from
+                      the upper left, insert at the top heading right, laps,
+                      deorbit and land on the upper right.
+
+    It is the same flight as the 3D view, laid out the same way, and the
+    marker is placed by the shared `FlightPlan.info`, so it is always at
+    the same point of the trip as the 3D rocket.
 
     Layout, recomputed whenever the pane is resized:
       * header: title on the left, compact readout panel top-right (it
@@ -791,6 +1045,8 @@ class TransferMap(tk.Canvas):
         super().__init__(master, width=MIN_MAP_WIDTH, height=HEIGHT, bg=T.SURFACE,
                          highlightthickness=0)
         self.dest = EARTH
+        self.plan = plan_for(None)
+        self.orbit = None
         self._geo: dict = {}
         self._images: list = []
         self._preview: tuple[float, float] | None = None
@@ -801,9 +1057,27 @@ class TransferMap(tk.Canvas):
         self.bind("<Configure>", self._on_resize)
 
     # --- public --------------------------------------------------------------
-    def set_destination(self, dest) -> None:
-        self.dest = dest
+    def set_scene(self, dest, plan: FlightPlan, orbit=None) -> None:
+        self.dest, self.plan, self.orbit = dest, plan, orbit
         self.redraw()
+
+    def set_destination(self, dest) -> None:
+        self.set_scene(dest, self.plan, self.orbit)
+
+    @property
+    def kind(self) -> str:
+        return self.plan.kind
+
+    def _titles(self) -> tuple[str, str]:
+        if self.kind == "earth":
+            orbit = self.orbit
+            where = (f"{orbit.name}  ·  {orbit.altitude_km:,.0f} km up" if orbit
+                     else "Earth orbit")
+            return "ORBIT MAP", where
+        if self.kind == "l1":
+            return "TRANSFER MAP", "Earth → Sun–Earth L1  ·  ~1.5 million km (not to scale)"
+        return "TRANSFER MAP", (f"Earth → {self.dest.name}  ·  "
+                                f"{self.dest.distance_label.split(' from ')[0]}")
 
     def preview(self, duration_s: float) -> None:
         self._preview = (time.monotonic(), duration_s)
@@ -851,12 +1125,11 @@ class TransferMap(tk.Canvas):
         title_w = (w - 2 * pad - panel_w - 16) if side_by_side else (w - 2 * pad)
 
         # --- title block (left) ---
-        title = self.create_text(pad, pad, anchor="nw", text="TRANSFER MAP", fill=T.ACCENT,
+        heading, subtitle = self._titles()
+        title = self.create_text(pad, pad, anchor="nw", text=heading, fill=T.ACCENT,
                                  font=T.canvas_font(11, bold=True))
         sub = self.create_text(pad, self.bbox(title)[3] + 4, anchor="nw", width=title_w,
-                               fill=T.TEXT_MUTED, font=T.canvas_font(10),
-                               text=f"Earth → {self.dest.name}  ·  "
-                                    f"{self.dest.distance_label.split(' from ')[0]}")
+                               fill=T.TEXT_MUTED, font=T.canvas_font(10), text=subtitle)
         title_bottom = self.bbox(sub)[3]
 
         # --- readout panel (top-right, or under the title when narrow) ---
@@ -894,8 +1167,11 @@ class TransferMap(tk.Canvas):
 
         # --- legend (bottom, wraps onto extra rows when narrow) ---
         legend_font = tkfont.Font(family=T.FONT_FAMILY, size=10)
-        items = (("Outbound", T.OUTBOUND, (6, 4)), ("Return", T.RETURN, (6, 4)),
-                 ("Parking orbit", T.ORBIT_RING, (3, 3)))
+        names = {"earth": ("Ascent", "Deorbit", "Mission orbit"),
+                 "l1": ("Outbound", "Return", "Halo orbit")}.get(
+            self.kind, ("Outbound", "Return", "Parking orbit"))
+        items = ((names[0], T.OUTBOUND, (6, 4)), (names[1], T.RETURN, (6, 4)),
+                 (names[2], T.ORBIT_RING, (3, 3)))
         rows, row, lx = [], [], pad
         for label, colour, dash in items:
             width = 30 + 8 + legend_font.measure(label)
@@ -938,15 +1214,40 @@ class TransferMap(tk.Canvas):
         dy = (ry0 + ry1) / 2 - (by0 + by1) / 2
         self._draw_map(scale, dx, dy)
 
-    def _draw_map(self, s: float, ox: float, oy: float) -> None:
-        """Map geometry in abstract units, scaled by `s` and offset."""
-        self.delete("map", "marker")
-        self._images.clear()
-
-        def at(p):
-            return (ox + p[0] * s, oy + p[1] * s)
-
+    def _layout(self) -> dict:
+        """Map geometry for the mission kind, in abstract units (screen y
+        points down). Keys: bodies [(planet, centre, radius)], sun (centre
+        or None), l1 (centre or None), outbound / homeward (cubic control
+        points), centre / rx / ry of the orbit, and a0 / turn: the orbit
+        angle at insertion and its direction (marker = centre +
+        (rx cos a, ry sin a), a = a0 + turn * angle)."""
         r_sun, r_earth = 9.0, 12.0
+        if self.kind == "earth":
+            r_earth = 26.0
+            earth = (0.0, 0.0)
+            rx, ry = r_earth * 1.95, r_earth * 1.32
+            ins = (earth[0], earth[1] - ry)              # top of the orbit, heading right
+            n_launch, n_land = (-0.6, -0.8), (0.6, -0.8)
+            pad = (earth[0] + n_launch[0] * r_earth, earth[1] + n_launch[1] * r_earth)
+            land = (earth[0] + n_land[0] * r_earth, earth[1] + n_land[1] * r_earth)
+            return dict(bodies=[(EARTH, earth, r_earth)], sun=None, l1=None,
+                        outbound=smooth_arc(pad, n_launch, ins, (1.0, 0.0), pull=0.5),
+                        homeward=smooth_arc(ins, (1.0, 0.0), land,
+                                            (-n_land[0], -n_land[1]), pull=0.5),
+                        centre=earth, rx=rx, ry=ry, a0=-math.pi / 2, turn=1.0)
+        if self.kind == "l1":
+            sun, l1, earth = (0.0, 0.0), (96.0, -2.0), (170.0, 8.0)
+            rx, ry = 10.0, 17.0                          # halo loop across the line
+            ins = (l1[0] + rx, l1[1])                    # side facing Earth, heading down
+            n_launch, n_land = (-0.8, -0.6), (-0.8, 0.6)
+            pad = (earth[0] + n_launch[0] * r_earth, earth[1] + n_launch[1] * r_earth)
+            land = (earth[0] + n_land[0] * r_earth, earth[1] + n_land[1] * r_earth)
+            cap = 2.2 * ry
+            return dict(bodies=[(EARTH, earth, r_earth)], sun=sun, l1=l1,
+                        outbound=smooth_arc(pad, n_launch, ins, (0.0, 1.0), end_cap=cap),
+                        homeward=smooth_arc(ins, (0.0, 1.0), land,
+                                            (-n_land[0], -n_land[1]), start_cap=cap),
+                        centre=l1, rx=rx, ry=ry, a0=0.0, turn=1.0)
         r_dest = max(6.0, min(22.0, self.dest.radius_px / 14 * 9))
         rx = r_dest + 14.0
         ry = rx * 0.45
@@ -955,29 +1256,51 @@ class TransferMap(tk.Canvas):
         earth = (44.0, 10.0)
         dest = (earth[0] + span, -8.0)
         intercept = (dest[0] - rx, dest[1])
-        # Screen y points down: launch from Earth's upper right, land lower right
+        # Launch from Earth's upper right, land lower right
         n_launch, n_land = (0.8, -0.6), (0.8, 0.6)
         pad = (earth[0] + n_launch[0] * r_earth, earth[1] + n_launch[1] * r_earth)
         land = (earth[0] + n_land[0] * r_earth, earth[1] + n_land[1] * r_earth)
         down = (0.0, 1.0)                     # orbit direction at the insertion point
         cap = 2.2 * rx                          # turn into / out of the orbit promptly
-        outbound = smooth_arc(pad, n_launch, intercept, down, end_cap=cap)
-        homeward = smooth_arc(intercept, down, land, (-n_land[0], -n_land[1]), start_cap=cap)
+        return dict(bodies=[(EARTH, earth, r_earth), (self.dest, dest, r_dest)], sun=sun,
+                    l1=None,
+                    outbound=smooth_arc(pad, n_launch, intercept, down, end_cap=cap),
+                    homeward=smooth_arc(intercept, down, land, (-n_land[0], -n_land[1]),
+                                        start_cap=cap),
+                    centre=dest, rx=rx, ry=ry, a0=math.pi, turn=-1.0)
+
+    def _draw_map(self, s: float, ox: float, oy: float) -> None:
+        """Map geometry in abstract units, scaled by `s` and offset."""
+        self.delete("map", "marker")
+        self._images.clear()
+
+        def at(p):
+            return (ox + p[0] * s, oy + p[1] * s)
+
+        g = self._layout()
+        outbound, homeward = g["outbound"], g["homeward"]
+        centre, rx, ry = g["centre"], g["rx"], g["ry"]
+        r_sun = 9.0
 
         def line(points, colour, dash, width=2.0):
             self.create_line(*[v for pt in points for v in at(pt)], fill=colour, dash=dash,
                              width=width, tags="map")
 
-        line([cubic(*homeward, i / 80) for i in range(81)], T.RETURN, (6, 4), 1.6)
-        line([cubic(*outbound, i / 80) for i in range(81)], T.OUTBOUND, (6, 4))
-        line([(dest[0] + rx * math.cos(a), dest[1] + ry * math.sin(a))
+        if g["l1"] is not None:                   # the Sun–Earth line L1 sits on
+            line([g["sun"], g["bodies"][0][1]], T.BORDER_STRONG, (2, 4), 1.0)
+        line([(centre[0] + rx * math.cos(a), centre[1] + ry * math.sin(a))
               for a in (2 * math.pi * i / 60 for i in range(61))], T.ORBIT_RING, (3, 3), 1.4)
 
-        cx, cy = at(sun)
-        for grow, colour in ((6.0, "#2A2208"), (3.0, "#5C4A12"), (0.0, T.SUN)):
-            r = (r_sun + grow) * s
-            self.create_oval(cx - r, cy - r, cx + r, cy + r, fill=colour, outline="", tags="map")
-        for planet, pt, r in ((EARTH, earth, r_earth), (self.dest, dest, r_dest)):
+        if g["sun"] is not None:
+            cx, cy = at(g["sun"])
+            for grow, colour in ((6.0, "#2A2208"), (3.0, "#5C4A12"), (0.0, T.SUN)):
+                r = (r_sun + grow) * s
+                self.create_oval(cx - r, cy - r, cx + r, cy + r, fill=colour, outline="",
+                                 tags="map")
+            if g["l1"] is not None:
+                self.create_text(cx, cy + (r_sun + 10) * s, text="Sun", fill=T.TEXT_MUTED,
+                                 font=T.canvas_font(10, bold=True), tags="map")
+        for planet, pt, r in g["bodies"]:
             px, py = at(pt)
             rr = r * s
             img = assets.canvas_photo(assets.PLANET_DIR / f"{planet.id}.png", max(4, int(2 * rr)))
@@ -989,6 +1312,16 @@ class TransferMap(tk.Canvas):
                                  outline="", tags="map")
             self.create_text(px, py + rr + 10, text=planet.name, fill=T.TEXT_MUTED,
                              font=T.canvas_font(10, bold=True), tags="map")
+        if g["l1"] is not None:                   # the L1 point itself
+            px, py = at(g["l1"])
+            d = max(4.0, 4.5 * s)
+            self.create_polygon(px, py - d, px + d, py, px, py + d, px - d, py, fill=T.SUN,
+                                outline="", tags="map")
+            self.create_text(px, py - ry * s - 10, text="L1", fill=T.SUN,
+                             font=T.canvas_font(10, bold=True), tags="map")
+        # Paths on top of the bodies (the Earth-orbit ascent starts on Earth)
+        line([cubic(*homeward, i / 80) for i in range(81)], T.RETURN, (6, 4), 1.6)
+        line([cubic(*outbound, i / 80) for i in range(81)], T.OUTBOUND, (6, 4))
 
         r_m = max(4.0, min(7.0, 5 * s))     # marker stays small on big maps
         halo = self.create_oval(0, 0, 0, 0, outline=T.ACCENT, width=2, state="hidden",
@@ -997,13 +1330,14 @@ class TransferMap(tk.Canvas):
                                tags="marker")
         self._geo = dict(outbound=tuple(at(p) for p in outbound),
                          homeward=tuple(at(p) for p in homeward),
-                         dest=at(dest), rx=rx * s, ry=ry * s, dot=dot, halo=halo, r=r_m)
+                         dest=at(centre), rx=rx * s, ry=ry * s, a0=g["a0"], turn=g["turn"],
+                         dot=dot, halo=halo, r=r_m)
 
     def _orbit_point(self, angle: float):
-        """Orbit position after travelling `angle` from the insertion point
-        (left of the ellipse), heading down first — like the 3D rocket."""
+        """Orbit position after travelling `angle` from the insertion point,
+        in the same direction as the 3D rocket."""
         g = self._geo
-        a = math.pi - angle
+        a = g["a0"] + g["turn"] * angle
         return (g["dest"][0] + g["rx"] * math.cos(a), g["dest"][1] + g["ry"] * math.sin(a))
 
     def _point_for(self, info: dict):
@@ -1029,7 +1363,7 @@ class TransferMap(tk.Canvas):
             if s >= 1.0:
                 self._preview = None
             else:
-                info = flight_info(s)
+                info = self.plan.info(s)
         point = self._point_for(info)
         if point is None:
             self.itemconfigure(g["dot"], state="hidden")

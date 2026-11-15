@@ -15,7 +15,13 @@ if TYPE_CHECKING:
     from .simulation import MissionResult
 
 SAVE_DIR = Path(__file__).parent / "saves"
-HISTORY_FILE = SAVE_DIR / "history.jsonl"
+HISTORY_FILE = SAVE_DIR / "history.jsonl"   # default location; see _history_file()
+
+
+def _history_file() -> Path:
+    """The leaderboard file inside the *current* SAVE_DIR, so redirecting
+    SAVE_DIR (e.g. in tests) redirects the history too."""
+    return SAVE_DIR / "history.jsonl"
 
 
 def _ensure_dir() -> None:
@@ -47,14 +53,15 @@ def save_result(result: "MissionResult", score: float) -> None:
     """Append a mission result to the leaderboard/history."""
     _ensure_dir()
     entry = {**result.to_dict(), "score": score}
-    with HISTORY_FILE.open("a", encoding="utf-8") as f:
+    with _history_file().open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
 
 
 def load_leaderboard() -> list[dict]:
     """Return all recorded mission results, sorted by score."""
-    if not HISTORY_FILE.exists():
+    history = _history_file()
+    if not history.exists():
         return []
-    with HISTORY_FILE.open(encoding="utf-8") as f:
+    with history.open(encoding="utf-8") as f:
         entries = [json.loads(line) for line in f if line.strip()]
     return sorted(entries, key=lambda e: e["score"], reverse=True)

@@ -37,6 +37,8 @@ class Scenario:
     allowed_instruments: list[str] | None = None  # instrument ids, None = all
     event_frequency_multiplier: float = 1.0
     sandbox_mode: bool = False
+    # instrument id -> why it's a poor fit (a soft warning, never a block)
+    unsuitable_instruments: dict[str, str] = field(default_factory=dict)
 
     def effective_budget(self) -> float:
         """Budget adjusted by difficulty (tighter budgets on higher difficulty)."""
@@ -44,6 +46,15 @@ class Scenario:
             return self.budget_usd
         mult = DIFFICULTY_MULTIPLIERS.get(self.difficulty, {}).get("budget", 1.0)
         return self.budget_usd * mult
+
+    def instrument_warnings(self, instruments) -> list[str]:
+        """Soft warnings for instruments that don't suit this scenario."""
+        out = []
+        for inst in instruments:
+            reason = self.unsuitable_instruments.get(inst.id)
+            if reason:
+                out.append(f"{inst.name} doesn't suit {self.name}: {reason}")
+        return out
 
 
 def load_scenarios(path: Path | None = None) -> dict[str, Scenario]:
@@ -65,6 +76,7 @@ def load_scenarios(path: Path | None = None) -> dict[str, Scenario]:
             allowed_instruments=entry.get("allowed_instruments"),
             event_frequency_multiplier=float(entry.get("event_frequency_multiplier", 1.0)),
             sandbox_mode=bool(entry.get("sandbox_mode", False)),
+            unsuitable_instruments=dict(entry.get("unsuitable_instruments") or {}),
         )
         scenarios[sc.id] = sc
     return scenarios

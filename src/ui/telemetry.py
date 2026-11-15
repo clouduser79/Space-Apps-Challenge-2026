@@ -44,6 +44,9 @@ def resource_readings(mission: Mission) -> dict[str, Reading]:
     frac = r.cost_spent_usd / r.budget_limit_usd if r.budget_limit_usd else 0.0
     if frac > 1:
         hint = "Over budget"
+    elif not mission.picks_destination:
+        hint = (f"{T.money(r.budget_remaining_usd)} remaining · "
+                f"{mission.scenario.name} budget")
     elif mission.destination is None:
         hint = "Minimum budget — a farther destination raises it"
     else:
@@ -129,7 +132,8 @@ def systems_check(mission: Mission) -> list[tuple[str, str, str]]:
         row("Launch vehicle", mission.launch_vehicle is not None,
             mission.launch_vehicle.name if mission.launch_vehicle else "", "not selected"),
         row("Destination", mission.destination is not None,
-            mission.destination.name if mission.destination else "", "not selected"),
+            mission.destination.name if mission.destination else "",
+            "not selected" if mission.picks_destination else "set by orbit"),
     ]
     return rows
 
@@ -192,7 +196,7 @@ def design_grade(mission: Mission) -> tuple[str, int, str]:
     if sc.comms_mbps and sc.data_rate_mbps > sc.comms_mbps:
         score -= 5
         tips.append("Instruments make data faster than you can send it home")
-    if mission.destination is None:
+    if mission.destination is None and mission.picks_destination:
         score -= 5
         tips.append("Pick a destination")
 

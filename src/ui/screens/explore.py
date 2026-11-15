@@ -51,8 +51,10 @@ class FactsScreen(Screen):
         card = Card(self.body)
         card.grid(sticky="ew", padx=(0, T.PAD_SM))
         text(card, "No destination selected yet", T.H2).pack(pady=(T.PAD_XL, 4))
-        text(card, "Pick a launch vehicle in “Orbit & Launch”, then choose a "
-                   "world within its range.", T.BODY, T.TEXT_MUTED).pack()
+        hint = ("Pick a launch vehicle in “Orbit & Launch”, then choose a world "
+                "within its range." if self.mission.picks_destination
+                else "Pick an orbit in “Orbit & Launch” — it decides where you fly.")
+        text(card, hint, T.BODY, T.TEXT_MUTED).pack()
         ghost_button(card, "Go to Orbit & Launch",
                      lambda: self.app.show_screen("orbit"), width=220).pack(
             pady=(T.PAD, T.PAD_XL))
@@ -62,7 +64,7 @@ class FactsScreen(Screen):
         hero.grid(sticky="ew", padx=(0, T.PAD_SM))
         hero.grid_columnconfigure(1, weight=1)
         image = assets.planet_image(p.id, 168)
-        ctk.CTkLabel(hero, text="" if image else "●", image=image,
+        ctk.CTkLabel(hero, text="" if image else "◆", image=image,
                      text_color=p.color, font=T.font(120, "bold")).grid(
             row=0, column=0, rowspan=3, padx=T.PAD_LG, pady=T.PAD_LG)
         eyebrow(hero, "Destination").grid(row=0, column=1, sticky="sw", pady=(T.PAD_LG, 0))
@@ -73,11 +75,17 @@ class FactsScreen(Screen):
         tiles = ctk.CTkFrame(self.body, fg_color="transparent")
         tiles.grid(sticky="ew", pady=T.PAD, padx=(0, T.PAD_SM))
         tiles.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="t")
-        for i, (caption, value) in enumerate([
-                ("Diameter", f"{p.diameter_km:,.0f} km"),
-                ("Length of day", _day_length(p.day_hours)),
-                ("Moons", f"{p.moons}"),
-                ("From the Sun", f"{p.distance_au:g} AU")]):
+        if p.id == "l1":                    # a point in space, not a world
+            stats = [("Distance from Earth", "~1.5 million km"),
+                     ("Halo loop", "~6 months"),
+                     ("Eclipses", "Never"),
+                     ("From the Sun", f"{p.distance_au:g} AU")]
+        else:
+            stats = [("Diameter", f"{p.diameter_km:,.0f} km"),
+                     ("Length of day", _day_length(p.day_hours)),
+                     ("Moons", f"{p.moons}"),
+                     ("From the Sun", f"{p.distance_au:g} AU")]
+        for i, (caption, value) in enumerate(stats):
             StatTile(tiles, caption, value, fg_color=T.CARD).grid(
                 row=0, column=i, sticky="ew", padx=(0 if i == 0 else T.PAD_SM, 0))
 

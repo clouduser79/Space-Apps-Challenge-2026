@@ -54,7 +54,7 @@ SCREENS: list[tuple[type[Screen], str]] = [
     (LaunchScreen, "Launch"),
     (ResultsScreen, "Results"),
 ]
-GATE_KEY = "orbit"   # can't move past this step without orbit + LV + destination
+GATE_KEY = "orbit"   # can't move past this step without orbit + LV (+ destination in sandbox)
 
 
 def load_orbits() -> dict[str, Orbit]:
@@ -244,10 +244,10 @@ class GameApp(ctk.CTk):
         if self.order.index(target) <= self.order.index(GATE_KEY):
             return None
         m = self.mission
-        missing = [label for value, label in ((m.orbit, "an orbit"),
-                                              (m.launch_vehicle, "a launch vehicle"),
-                                              (m.destination, "a destination"))
-                   if value is None]
+        needed = [(m.orbit, "an orbit"), (m.launch_vehicle, "a launch vehicle")]
+        if m.picks_destination:             # otherwise the orbit sets it
+            needed.append((m.destination, "a destination"))
+        missing = [label for value, label in needed if value is None]
         if missing:
             return "Before continuing, select " + ", ".join(missing) + " in Orbit & Launch."
         return None

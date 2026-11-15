@@ -109,12 +109,55 @@ PLANETS: dict[str, Planet] = {
         ]),
 }
 
-# Earth — the departure point
+# Earth — the departure point, and the target of Earth-orbit missions
 EARTH = Planet(
     id="earth", name="Earth", distance_au=1.0,
-    distance_label="Home", diameter_km=12742, day_hours=24, moons=1,
-    color="#4A90D9", radius_px=14,
-    facts=["Earth is the only known planet with life."])
+    distance_label="Home — the planet every mission launches from", diameter_km=12742, day_hours=24, moons=1,
+    color="#4A90D9", radius_px=14, reach_key="orbit",
+    facts=["Earth is the only known planet with life.",
+           "About 71% of Earth's surface is covered by water.",
+           "Thousands of satellites watch Earth's weather, crops, ice and oceans."])
+
+# The Sun–Earth L1 point: not a world, but a balance point ~1.5 million km
+# sunward of Earth where a spacecraft keeps pace with Earth around the Sun.
+L1_POINT = Planet(
+    id="l1", name="Sun–Earth L1", distance_au=0.99,
+    distance_label="~1.5 million km from Earth, toward the Sun",
+    diameter_km=0, day_hours=0, moons=0,
+    color="#FBBF24", radius_px=6, reach_key="escape",
+    distance_from_earth_km=1_500_000.0,
+    facts=["L1 is a Lagrange point: the Sun's and Earth's gravity balance so a "
+           "spacecraft there circles the Sun in step with Earth.",
+           "Spacecraft don't sit still at L1 — they fly slow 'halo' loops around "
+           "it, one every ~6 months.",
+           "From L1 the Sun is never eclipsed, so solar storms are spotted about "
+           "an hour before they reach Earth."])
+
+# Every destination a mission can have, for lookups (e.g. loading a save).
+# PLANETS stays the sandbox picker / budget catalogue.
+DESTINATIONS: dict[str, Planet] = {**PLANETS, EARTH.id: EARTH, L1_POINT.id: L1_POINT}
+
+# Orbit body (orbits.json) -> destination
+_BODY_DESTINATION = {"earth": EARTH, "moon": PLANETS["moon"], "mars": PLANETS["mars"],
+                     "deep space": L1_POINT}
+
+
+def destination_for_orbit(orbit) -> Planet | None:
+    """The destination implied by an orbit's body: Earth orbits -> Earth,
+    Low Lunar Orbit -> Moon, Low Mars Orbit -> Mars, L1 -> the L1 point."""
+    if orbit is None:
+        return None
+    return _BODY_DESTINATION.get(orbit.body.lower())
+
+
+def mission_kind(destination: Planet | None) -> str:
+    """How the mission flies: "earth" (up, orbit, back down), "l1" (out to
+    the L1 point and back) or "interplanetary" (to another world and back)."""
+    if destination is None or destination.id == EARTH.id:
+        return "earth"
+    if destination.id == L1_POINT.id:
+        return "l1"
+    return "interplanetary"
 
 
 # --------------------------------------------------------------------------
@@ -161,7 +204,10 @@ def score_orbit_for(orbit, dest: Planet) -> tuple[float, list[str]]:
     reasons: list[str] = []
 
     # Orbit body should match the destination (or be a transfer orbit)
-    if orbit.body.lower() != dest.name.lower() and dest.id != "moon":
+    implied = destination_for_orbit(orbit)
+    if implied is not None and implied.id == dest.id:
+        reasons.append(f"Orbit matches destination ({dest.name})")
+    elif orbit.body.lower() != dest.name.lower() and dest.id != "moon":
         if orbit.body == "Deep Space":
             score -= 10
             reasons.append("Deep-space orbit: long cruise, limited coverage of target")
