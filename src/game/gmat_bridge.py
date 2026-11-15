@@ -13,14 +13,46 @@ Typical use:
 from __future__ import annotations
 
 import math
+import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
-# GMAT install bundled with the repo
-GMAT_ROOT = Path(__file__).resolve().parent.parent.parent / "gmat-win-R2026a"
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _bundled_gmat_dir() -> Path:
+    """GMAT install shipped alongside the code (read-only in app bundles)."""
+    if getattr(sys, "frozen", False):
+        # PyInstaller .app: Resources lives next to the executable
+        return Path(sys.executable).parent / "Resources" / "gmat-mac"
+    if sys.platform == "darwin":
+        return _REPO_ROOT / "gmat-mac-R2026a"
+    return _REPO_ROOT / "gmat-win-R2026a"
+
+
+def _writable_gmat_root() -> Path:
+    """GMAT writes scripts/reports next to its binaries, so it needs a
+    writable directory. Frozen macOS apps can't write inside the .app
+    bundle — copy the bundled install to Application Support once."""
+    src = _bundled_gmat_dir()
+    if sys.platform != "darwin" or not getattr(sys, "frozen", False):
+        return src
+    dest = (Path.home() / "Library" / "Application Support"
+            / "SpaceMissionGame" / "gmat")
+    if not (dest / "bin" / "GmatConsole").exists():
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(src, dest, symlinks=True)
+    return dest
+
+
+# Resolved lazily per bridge instance (see GMATBridge.__init__)
+GMAT_ROOT = _bundled_gmat_dir()
 GMAT_BIN = GMAT_ROOT / "bin"
-GMAT_CONSOLE = GMAT_BIN / "GmatConsole.exe"
+GMAT_CONSOLE = GMAT_BIN / ("GmatConsole.exe" if sys.platform == "win32"
+                           else "GmatConsole")
 OUTPUT_DIR = GMAT_ROOT / "output"
 
 # Central body -> GMAT force-model primary body name
@@ -44,7 +76,12 @@ class GMATBridge:
     """Generates GMAT scripts, runs them headless, parses reports."""
 
     def __init__(self) -> None:
-        self.available = GMAT_CONSOLE.exists()
+        self.root = _writable_gmat_root()
+        self.bin = self.root / "bin"
+        self.console = self.bin / ("GmatConsole.exe" if sys.platform == "win32"
+                                   else "GmatConsole")
+        self.output = self.root / "output"
+        self.available = self.console.exists()
 
     # ------------------------------------------------------------------
     # Script generation
@@ -100,15 +137,15 @@ Propagate 'Prop orbit' DefaultProp(DefaultSC) {{DefaultSC.ElapsedSecs = {prop_se
         """Write script into GMAT bin dir, run console, return report path."""
         if not self.available:
             return None
-        script_path = GMAT_BIN / "_game_script.script"
+        script_path = self.bin / "_game_script.script"
         script_path.write_text(script, encoding="utf-8")
-        report_path = OUTPUT_DIR / report_name
+        report_path = self.output / report_name
         if report_path.exists():
             report_path.unlink()
         try:
             subprocess.run(
-                [str(GMAT_CONSOLE), script_path.name],
-                cwd=str(GMAT_BIN),
+                [str(self.console), script_path.name],
+                cwd=str(self.bin),
                 capture_output=True, timeout=120,
             )
         except (subprocess.TimeoutExpired, OSError):
