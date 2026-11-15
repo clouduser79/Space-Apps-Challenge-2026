@@ -24,8 +24,8 @@ wizard — one screen at a time with Back/Next navigation:
    comms, ADCS, and avionics components
 4. **Payload** — add/remove scientific instruments, each with mass,
    power, cost, and data-rate trade-offs
-5. **Orbit & launch** — choose orbital regime, launch vehicle, and
-   destination planet
+5. **Orbit & launch** — choose orbital regime and launch vehicle; the
+   orbit sets the destination (sandbox: pick a destination planet)
 6. **Scenario** — pick a mission scenario (difficulty-scaled budget and
    event frequency, or sandbox mode)
 7. **Spacecraft bus** — add/remove components grouped by category
@@ -34,16 +34,22 @@ wizard — one screen at a time with Back/Next navigation:
 8. **Payload** — add/remove instruments grouped by capability tag
    (imaging, spectroscopy, subsurface, space weather, sample return,
    comms); each adds science but consumes mass, power, cost, and data
-9. **Orbit & launch** — choose orbital regime, launch vehicle (shown as
-   a tiered button list: Light / Medium / Heavy), and destination planet.
-   All dropdowns start blank; Next is blocked with a warning until
-   orbit, vehicle, and destination are selected, and scenario-disallowed
-   orbits snap back to blank
+9. **Orbit & launch** — choose orbital regime and launch vehicle (shown
+   as a tiered button list: Light / Medium / Heavy). In the scenarios the
+   destination follows from the orbit (Earth orbits → Earth, Low Lunar
+   Orbit → Moon, Low Mars Orbit → Mars, L1 → the Sun–Earth L1 point);
+   only sandbox shows the destination picker. Next is blocked with a
+   warning until orbit and vehicle (and, in sandbox, a destination) are
+   selected, and scenario-disallowed orbits can't be picked
 10. **Planet facts** — educational facts about the chosen destination
 11. **Review** — live resource budgets (mass, power, cost, data storage,
-    time) with feasibility warnings, save/load and the leaderboard
+    time) with feasibility warnings (including instruments that don't
+    suit the scenario, e.g. a sample-return capsule on an Earth-imaging
+    mission — a caution, never a block), save/load and the leaderboard
 12. **Launch** — run the simulation and watch it fly in 3D, with a 2D
-    transfer minimap ("Preview route" replays the full round trip); launch
+    map alongside ("Preview route" replays the full flight). The flight
+    matches the mission type — Earth orbit, L1 or interplanetary — and
+    its length scales gently with the mission duration; launch
     is blocked when the design has unresolved errors (sandbox excepted)
 13. **Results** — opens automatically when the flight ends: score,
     breakdown, objectives, anomalies and engineering feedback
@@ -97,28 +103,47 @@ Mission Analysis Tool, R2026a) installation:
 
 ### Destinations & trajectory animation
 
-- **8 destinations**: Mercury, Moon, Mars, Venus, Jupiter, Saturn,
+- **Scenario destinations come from the orbit**
+  (`destination_for_orbit()` in `src/game/planets.py`): LEO / SSO / GEO →
+  Earth, Low Lunar Orbit → Moon, Low Mars Orbit → Mars, Sun–Earth L1 → the
+  L1 point (`L1_POINT`, a marked point in space rather than a planet).
+  Earth and L1 have their own Planet Facts pages.
+- **Sandbox destinations**: Mercury, Moon, Mars, Venus, Jupiter, Saturn,
   Uranus, Neptune — each with real facts (diameter, day length, moons)
-- **Reachability**: launch vehicle payload capacity classes
+- **Reachability** (sandbox): launch vehicle payload capacity classes
   (`escape` / `interplanetary` / `deep_space`) gate which planets are
   reachable — outer ice giants need flagship launchers
 - **Orbit scoring**: each orbit is scored 0–100 for a destination with
   human-readable reasons (body match, altitude, inclination, period,
   distance)
-- **Transfer map** (`src/ui/trajectory_view.py`): the 2D geometry —
-  outbound arc → parking orbit → return to Earth — now drawn as the
-  Launch screen's minimap. (`TrajectoryCanvas`, the old full-screen
-  Flight Path view, is kept in the file but no longer used.)
+- **2D map** (`TransferMap` in `src/ui/screens/launch_viewport.py`): the
+  Launch screen's map pane, laid out like the 3D view for each mission
+  type — an orbit map of Earth, a schematic Sun ← L1 ← Earth transfer, or
+  Sun → Earth → destination with outbound arc → parking orbit → return.
+  (`TrajectoryCanvas` in `src/ui/trajectory_view.py`, the old full-screen
+  Flight Path view, is kept but no longer used.)
 - **3D mission view** (Launch screen): a pure-Python canvas 3D engine
   (`src/ui/spacecraft_view.py`) flies Tharun's Rocket — strap-on boosters
-  that separate, unfolding solar arrays, an opening comms dish — to a
-  procedurally textured destination sized by its real diameter
-  (`src/ui/planet_render.py`) — launching from a 3D Earth, slipping into
-  orbit, flying three laps, then arcing home and landing back on Earth.
-  Paths are smooth cubic curves, and the 3D view and 2D map share one
-  flight timeline so they stay in step. It follows the simulation phases live,
-  shows the approach vector, range and real orbital speed (√(GM/r)), and
-  pins a 2D transfer minimap in the corner. Drag to orbit the camera.
+  that separate, unfolding solar arrays, an opening comms dish. The flight
+  matches the mission type (`src/ui/screens/launch_viewport.py`):
+  - **Earth orbit** (Earth Observation): lift off, climb into the mission
+    orbit, three orbits of Earth, deorbit burn and landing.
+  - **L1** (Deep Space Weather): cruise out to the L1 point, marked on the
+    Sun–Earth line sunward of Earth, hold station on a small halo loop,
+    then return to Earth.
+  - **Interplanetary** (Moon, Mars, sandbox worlds): launch from a 3D
+    Earth to a procedurally textured destination sized by its real
+    diameter (`src/ui/planet_render.py`), three laps, then arc home and
+    land back on Earth.
+
+  Paths are smooth cubic curves, and the 3D view and the 2D map share one
+  `FlightPlan` (phase names, lengths and laps) so they stay in step and
+  laid out the same way. The operations phase stretches gently with the
+  scenario's `mission_months` (12 months → ~10 s flight, 120 months →
+  ~14 s, always clamped to 8–16 s); milestones, event cards and the
+  launch-failure moment are placed as fractions of that same plan. It
+  follows the simulation phases live and shows the approach vector, range
+  or altitude and real orbital speed (√(GM/r)). Drag to orbit the camera.
   Preview the rocket alone with `python -m src.ui.spacecraft_view`.
 
 ### Simulation engine
@@ -199,17 +224,25 @@ Scores ≥ 90 show a **SUCCESS!** banner.
 required objectives/capabilities, orbit/instrument restrictions, and
 difficulty levels:
 
-- **Cadet** — half event frequency
+- **Cadet** — half event frequency, 1.5× budget
 - **Engineer** — baseline
-- **Expert** — 1.5× event frequency
+- **Expert** — 1.5× event frequency, 0.7× budget
 - **Sandbox** — unconstrained experimentation
 
-**Budget is set by the destination**, not the scenario
+**Scenario budgets** come from the scenario: `budget_usd` scaled by
+difficulty (`Scenario.effective_budget()` — cadet ×1.5, engineer ×1.0,
+expert ×0.7). Earth Observation gets **$75M**, Mars Reconnaissance
+**$500M** and Deep Space Weather Monitor **$300M**; the welcome cards show
+these figures.
+
+**In sandbox the budget is set by the destination**
 (`budget_for()` in `src/game/planets.py`). It scales in a straight line
 with distance from Earth, from **$200M** for the Moon (384,400 km) up to
 **$7.1B** for Neptune (4.3 billion km) — e.g. Mars ≈ $561M, Saturn ≈ $2.1B.
-Until a destination is chosen the $200M minimum applies. The scenarios'
-`budget_usd` values are no longer used.
+Until a destination is chosen the $200M minimum applies.
+
+Scenarios may list `unsuitable_instruments` (instrument id → reason); each
+one fitted shows a caution on the Review screen.
 
 ### Console mode
 

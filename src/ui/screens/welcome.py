@@ -213,8 +213,10 @@ class WelcomeView(ctk.CTkFrame):
 
         chips = ctk.CTkFrame(card, fg_color="transparent")
         chips.grid(sticky="w", padx=T.PAD, pady=(10, 14))
-        Chip(chips, f"Budget {T.money(MIN_BUDGET_USD)}–{T.money(MAX_BUDGET_USD)}").pack(
-            side="left")
+        budget = (f"Budget {T.money(MIN_BUDGET_USD)}–{T.money(MAX_BUDGET_USD)}"
+                  if scenario.sandbox_mode
+                  else f"Budget {T.money(scenario.effective_budget())}")
+        Chip(chips, budget).pack(side="left")
         Chip(chips, f"{scenario.mission_months} months").pack(side="left", padx=6)
         goals = len(scenario.required_objectives)
         Chip(chips, f"{goals} objective{'s' if goals != 1 else ''}" if goals
@@ -237,6 +239,10 @@ class WelcomeView(ctk.CTkFrame):
             lines.append("Allowed orbits: " + ", ".join(o.upper() for o in scenario.allowed_orbits))
         if scenario.sandbox_mode:
             lines.append("Sandbox: rule violations become warnings")
+            lines.append("Pick any destination — farther worlds get bigger budgets")
+        else:
+            lines.append(f"Budget: {T.money(scenario.effective_budget())} "
+                         f"({scenario.difficulty} difficulty)")
         for line in lines or ["No hard requirements"]:
             row = StatusRow(self.brief_rows, line)
             row.set("accent")

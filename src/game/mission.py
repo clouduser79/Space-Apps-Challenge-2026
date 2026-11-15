@@ -43,13 +43,12 @@ class Mission:
         self.spacecraft = Spacecraft()
         self.orbit: Orbit | None = None
         self.launch_vehicle: LaunchVehicle | None = None
-        self.destination = None  # Planet from planets.py, set during design
+        # Planet from planets.py. Scenario missions derive it from the
+        # orbit (see set_orbit); only sandbox players pick it themselves.
+        self.destination = None
 
-        # Budget is set by the destination (see planets.budget_for); until
-        # one is picked the minimum applies.
-        from .planets import budget_for
         self.resources = ResourceBudget(
-            budget_usd=budget_for(None),
+            budget_usd=self._budget_for(None),
             mission_months=scenario.mission_months,
         )
         self.players: list = []  # populated by game loop
@@ -102,19 +101,39 @@ class Mission:
             self._sync_resources()
         return ok
 
+    @property
+    def picks_destination(self) -> bool:
+        """Only sandbox players choose a destination; scenario missions
+        go wherever their orbit is."""
+        return self.scenario.sandbox_mode
+
+    def _budget_for(self, planet) -> float:
+        """Scenario missions get the scenario's difficulty-scaled budget;
+        in sandbox the budget grows with the destination's distance."""
+        if self.scenario.sandbox_mode:
+            from .planets import budget_for
+            return budget_for(planet)
+        return self.scenario.effective_budget()
+
     def set_orbit(self, orbit: Orbit) -> None:
         if (self.scenario.allowed_orbits
                 and orbit.id not in self.scenario.allowed_orbits):
             raise ValueError(f"{orbit.name} not allowed in this scenario")
         self.orbit = orbit
         self._update_mass_limit()
+        self._sync_destination()
+
+    def _sync_destination(self) -> None:
+        """Scenario missions: the destination follows the orbit's body."""
+        if not self.picks_destination:
+            from .planets import destination_for_orbit
+            self.set_destination(destination_for_orbit(self.orbit))
 
     def set_destination(self, planet) -> None:
-        """Set (or clear, with None) the destination planet. The mission
-        budget follows it: farther worlds get bigger budgets."""
-        from .planets import budget_for
+        """Set (or clear, with None) the destination planet. In sandbox the
+        budget follows it (farther worlds get bigger budgets)."""
         self.destination = planet
-        self.resources.budget_limit_usd = budget_for(planet)
+        self.resources.budget_limit_usd = self._budget_for(planet)
 
     def set_launch_vehicle(self, lv: LaunchVehicle) -> None:
         self.launch_vehicle = lv
@@ -192,6 +211,9 @@ class Mission:
                 f"far exceeds downlink ({self.spacecraft.comms_mbps:.0f} Mbps) — "
                 "expect data backlog")
 
+        # Instruments that don't suit the scenario: a caution, never a block
+        warnings.extend(self.scenario.instrument_warnings(self.spacecraft.payload))
+
         # Sandbox mode: violations become warnings
         if self.scenario.sandbox_mode:
             warnings.extend(errors)
@@ -261,7 +283,7 @@ class Mission:
         import json as _json
         from pathlib import Path as _Path
 
-        from .planets import PLANETS
+        from .planets import DESTINATIONS
         from .scenarios import get_scenarios
         from .spacecraft import BUS_COMPONENTS
 
@@ -312,10 +334,14 @@ class Mission:
             if lv_id in lv_cat:
                 mission.set_launch_vehicle(lv_cat[lv_id])
 
-        # Rebuild destination planet
-        dest_id = data.get("destination_id")
-        if dest_id and dest_id in PLANETS:
-            mission.set_destination(PLANETS[dest_id])
+        # Rebuild destination: picked in sandbox, implied by the orbit
+        # otherwise (an older save's hand-picked planet is ignored)
+        if mission.picks_destination:
+            dest_id = data.get("destination_id")
+            if dest_id and dest_id in DESTINATIONS:
+                mission.set_destination(DESTINATIONS[dest_id])
+        else:
+            mission._sync_destination()
 
         mission._sync_resources()
         return mission

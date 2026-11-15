@@ -1,9 +1,13 @@
-"""Orbit & Launch screen: pick an orbit, a launch vehicle and a destination.
+"""Orbit & Launch screen: pick an orbit and a launch vehicle (and, in
+sandbox, a destination).
 
-The game rules are unchanged from the original UI:
   * orbits outside the scenario's allowed list can't be chosen,
-  * the launch vehicle decides which destinations are reachable, and
-    changing it clears a destination that is no longer reachable,
+  * scenario missions go wherever their orbit is (Earth orbits -> Earth,
+    Low Lunar Orbit -> Moon, Low Mars Orbit -> Mars, L1 -> the Sun–Earth
+    L1 point) on the scenario's own budget; section 3 just shows that,
+  * in sandbox the player picks the destination: the launch vehicle
+    decides which worlds are reachable (changing it clears one that no
+    longer is) and the budget grows with distance,
   * GMAT is queried in the background for real orbital parameters.
 """
 
@@ -44,9 +48,14 @@ class OrbitLaunchScreen(Screen):
     title = "Orbit & Launch"
     subtitle = ("Where will you operate, what will get you there, and which "
                 "world is the target? All three are required to continue.")
+    scenario_subtitle = ("Where will you operate and what will get you there? "
+                         "Your orbit decides the destination. Both are required "
+                         "to continue.")
 
     def __init__(self, master, app) -> None:
         super().__init__(master, app)
+        if not self.mission.picks_destination:
+            self.subtitle = self.scenario_subtitle
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
         self.page_header().grid(row=0, column=0, sticky="ew", pady=(0, T.PAD))
@@ -84,6 +93,7 @@ class OrbitLaunchScreen(Screen):
 
         grid = ctk.CTkFrame(self.body, fg_color="transparent")
         grid.grid(sticky="ew", padx=(0, T.PAD_SM))
+        self._last_head = head
         return grid
 
     @staticmethod
@@ -256,9 +266,10 @@ class OrbitLaunchScreen(Screen):
         if self._shop_locked(lv.id, m.launch_vehicle is not None and m.launch_vehicle.id == lv.id):
             return
         self.mission.set_launch_vehicle(lv)
-        # A new rocket may not reach the current destination: clear it
+        # Sandbox: a new rocket may not reach the current destination: clear it
         dest = self.mission.destination
-        if dest and dest.id not in {p.id for p in reachable_planets(lv)}:
+        if (self.mission.picks_destination and dest
+                and dest.id not in {p.id for p in reachable_planets(lv)}):
             self.mission.set_destination(None)
             self.app.toast(f"{dest.name} is out of range for the {lv.name} — "
                            "pick a new destination.")
@@ -292,10 +303,36 @@ class OrbitLaunchScreen(Screen):
     # 3. Destination
     # ------------------------------------------------------------------
     def _build_destinations(self) -> None:
+        # Scenario missions: the destination follows the orbit (no picker)
+        self.auto_head = ctk.CTkFrame(self.body, fg_color="transparent")
+        self.auto_head.grid(sticky="ew", pady=(T.PAD_XL, 10), padx=(0, T.PAD_SM))
+        self.auto_head.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(self.auto_head, text="3", width=28, height=28, corner_radius=14,
+                     fg_color=T.ACCENT_BG, text_color=T.ACCENT,
+                     font=T.font(13, "bold")).grid(row=0, column=0, rowspan=2,
+                                                   sticky="n", padx=(0, 12))
+        glossary_text(self.auto_head, "Destination", T.H2).grid(row=0, column=1, sticky="ew")
+        glossary_text(self.auto_head, "Set by your orbit — the scenario decides "
+                      "where you fly and what you can spend.", T.SMALL,
+                      T.TEXT_DIM).grid(row=1, column=1, sticky="ew")
+        self.auto_card = Card(self.body)
+        self.auto_card.grid(sticky="ew", padx=(0, T.PAD_SM), pady=(0, T.PAD))
+        self.auto_card.grid_columnconfigure(1, weight=1)
+        self.auto_art = ctk.CTkLabel(self.auto_card, text="●", width=72, height=72,
+                                     font=T.font(48, "bold"), text_color=T.TEXT_DIM)
+        self.auto_art.grid(row=0, column=0, rowspan=2, padx=T.PAD, pady=T.PAD)
+        self.auto_name = text(self.auto_card, "", T.H2)
+        self.auto_name.grid(row=0, column=1, sticky="sw", pady=(T.PAD, 0))
+        self.auto_text = glossary_text(self.auto_card, "", T.SMALL, T.TEXT_MUTED)
+        self.auto_text.grid(row=1, column=1, sticky="new", padx=(0, T.PAD), pady=(2, T.PAD))
+        self._auto_shown = object()
+
+        # Sandbox: pick any world your rocket can reach
         grid = self._section(3, "Destination", "Your launch vehicle decides which "
                              "worlds are in range. Farther worlds come with bigger "
                              f"budgets — from {T.money(MIN_BUDGET_USD)} for the Moon "
                              f"to {T.money(MAX_BUDGET_USD)} for Neptune.")
+        self.pick_head, self.pick_grid = self._last_head, grid
         cards = []
         for pid, planet in PLANETS.items():
             card = SelectableCard(grid, command=lambda p=planet: self._pick_destination(p))
@@ -343,8 +380,42 @@ class OrbitLaunchScreen(Screen):
         self.mission.set_destination(planet)
         self.app.on_design_changed()
 
+    def _refresh_auto_destination(self) -> None:
+        m = self.mission
+        dest = m.destination
+        key = (dest.id if dest else None, m.orbit.id if m.orbit else None)
+        if key == self._auto_shown:
+            return
+        self._auto_shown = key
+        budget = (f"Budget {T.money(m.resources.budget_limit_usd)} "
+                  f"({m.scenario.name}, {m.scenario.difficulty} difficulty).")
+        if dest is None:
+            self.auto_art.configure(image=None, text="●", text_color=T.TEXT_DIM)
+            self.auto_name.configure(text="Pick an orbit")
+            self.auto_text.set_text("Your orbit decides where this mission flies. " + budget,
+                                    T.TEXT_MUTED)
+            return
+        image = assets.planet_image(dest.id, 64)
+        if image:
+            self.auto_art.configure(image=image, text="")
+        else:
+            self.auto_art.configure(image=None, text="◆", text_color=dest.color)
+        self.auto_name.configure(text=dest.name)
+        where = (f"{m.orbit.altitude_km:,.0f} km above Earth" if dest.id == "earth"
+                 else dest.distance_label)
+        self.auto_text.set_text(f"{m.orbit.name} — {where}. " + budget, T.TEXT_MUTED)
+
     def _refresh_destinations(self) -> None:
         m = self.mission
+        picking = m.picks_destination
+        for widget in (self.pick_head, self.pick_grid):
+            widget.grid() if picking else widget.grid_remove()
+        for widget in (self.auto_head, self.auto_card):
+            widget.grid_remove() if picking else widget.grid()
+        if not picking:
+            self.fit_card.grid_remove()
+            self._refresh_auto_destination()
+            return
         reachable = {p.id for p in reachable_planets(m.launch_vehicle)}
         for pid, card in self.planet_cards.items():
             card.set_selected(m.destination is not None and m.destination.id == pid)
