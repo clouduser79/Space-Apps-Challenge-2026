@@ -16,7 +16,6 @@ import math
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -81,6 +80,11 @@ class GMATBridge:
         self.console = self.bin / ("GmatConsole.exe" if sys.platform == "win32"
                                    else "GmatConsole")
         self.output = self.root / "output"
+        # GMAT expects these dirs but they're empty, so git doesn't track
+        # them — create on demand (fresh clones, trimmed installs).
+        self.output.mkdir(parents=True, exist_ok=True)
+        (self.root / "data" / "gravity" / "other").mkdir(parents=True,
+                                                       exist_ok=True)
         self.available = self.console.exists()
 
     # ------------------------------------------------------------------

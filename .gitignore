@@ -9,6 +9,8 @@ env/
 # Saves / runtime data
 saves/
 *.jsonl
+gmat-win-R2026a/bin/GmatLog.txt
+gmat-win-R2026a/output/
 
 # IDE
 .vscode/

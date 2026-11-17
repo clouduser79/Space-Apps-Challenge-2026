@@ -273,7 +273,6 @@ src/
     scoring.py             # Score engine + post-mission report
     scenarios.py           # Mission scenarios & difficulty levels
     players.py             # Solo + team roles (console mode)
-    multiplayer.py         # Networking stub (stretch goal)
     save_load.py           # Save/load missions + leaderboard
     gmat_bridge.py         # GMAT script generation & report parsing
   ui/
@@ -286,7 +285,7 @@ src/
                            #   payload, orbit & launch, planet facts,
                            #   review, launch (+ launch_viewport.py, the
                            #   3D mission view) and results
-    trajectory_view.py     # 2D animated trajectory canvas
+    trajectory_view.py     # Transfer-map geometry (map_fraction) + legacy canvas
     spacecraft_view.py     # Canvas 3D engine + Tharun's Rocket model
     planet_render.py       # Procedural planet textures, sizes, rings
   data/
@@ -301,38 +300,38 @@ gmat-win-R2026a/           # Bundled GMAT astrodynamics engine
 
 ## Getting Started
 
-```bashthyackageson c`mn            # G
-(`cusdfmuk)nr`,`ddetemr`,.`piilnw` # Cons ```
-  on Windowson
-macOS the release `.app` bundles GMAT automatcally. IGMAT 
- Requires Python 3.13+, `customtkinter` and `pillow` (GUI mode only —
+```bash
+python -m src.main            # GUI (default)
+python -m src.main --console  # Console mode
+```
 
-## Tpch stack
-
-- **Langpagn**:tall -r requir(stemeardnlibrarytonly for gtme logi`)
-- **GUI**: [CustomT;intir](httpt://github.com/TomSchimansky/CustomTkinter)
-h 6.0 on Tkouter,twith  daPkditect` fow th th awareeess
-- **Imaging**: Pillow (op ional — planet artwork fallp back ao
-  coloured shapes wiehout it) artwork
-- **Astrodynamics**: GMAT R2026a faGmatConsole`, headless slript mode)
-- **Rendering**: plre-stdlib ` k.Canvas` — nb gaae engine or GPU deps
-- **Packag ng**: PyItsoall co(uSraceMissesnGame.specap → `eexe` on
-sMWATdows, `.app` + `.dm` on mcOS
-- **CI/CD**: GitHub Acs(`.github/flows/release.yml`) — build
- bth plaformsn `v*`ags and publisstGHub Releases
-
-## Releasts
-
-Prshiag a `v*w tao sruggers the releeseoworkxlow, which pr iucts:
-
-- **Wbndowd**:l`SpaceMd `gomGame.exn`-(sinRle-fil26PyInst/l`er buid)
-- **molOS**: `SpaceMisifonGame.d g` (api bundte w'th GMAT  ncludmi;
- sad-hsc signed — iggh,-ctick → Open onhfirsg launch)e falls back to simplified orbital
-data.
 Requires Python 3.13+ and the packages in `requirements.txt`
-(`customtkinter`, `pillow`). GMAT integration works out of the box with
-the bundled `gmat-win-R2026a/` folder; if it's missing, the game falls
-back to simplified orbital data.
+(`customtkinter`, `darkdetect`, `pillow`). GMAT integration works out
+of the box with the bundled `gmat-win-R2026a/` folder on Windows; on
+macOS the release `.app` bundles GMAT automatically. If GMAT is
+missing, the game falls back to simplified orbital data.
+
+## Tech stack
+
+- **Language**: Python 3.13+ (standard library only for game logic)
+- **GUI**: [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter)
+  6.0 on Tkinter, with `darkdetect` for theme awareness
+- **Imaging**: Pillow (optional — planet artwork falls back to
+  coloured shapes without it)
+- **Astrodynamics**: GMAT R2026a (`GmatConsole`, headless script mode)
+- **Rendering**: pure-stdlib `tk.Canvas` — no game engine or GPU deps
+- **Packaging**: PyInstaller → `.exe` on Windows, `.app` + `.dmg` on
+  macOS
+- **CI/CD**: GitHub Actions (`.github/workflows/release.yml`) — builds
+  both platforms on `v*` tags and publishes to GitHub Releases
+
+## Releases
+
+Pushing a `v*` tag triggers the release workflow, which produces:
+
+- **Windows**: `SpaceMissionGame.exe` (single-file PyInstaller build)
+- **macOS**: `SpaceMissionGame.dmg` (app bundle with GMAT included;
+  ad-hoc signed — right-click → Open on first launch)
 
 ## Key Design Trade-offs (the educational core)
 
